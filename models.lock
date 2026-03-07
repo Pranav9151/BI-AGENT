@@ -1,0 +1,28 @@
+# =============================================================================
+# Smart BI Agent — Ollama Model Pinning (T33)
+# Architecture v3.1 — Model Supply Chain Security
+#
+# Each model is pinned by SHA256 digest to prevent model poisoning.
+# Runtime pulls are DISABLED in production (Nginx blocks /api/pull).
+#
+# To update:
+#   1. Pull model: ollama pull llama3.3:70b
+#   2. Get digest: ollama show llama3.3:70b --modelfile | grep FROM
+#   3. Update this file with new digest
+#   4. Commit to git
+#   5. Redeploy
+#
+# Format: model_tag = sha256:digest
+# =============================================================================
+
+[models]
+# SQL Generation (primary)
+# llama3.3:70b = sha256:POPULATE_AFTER_PULL
+
+# SQL Generation (fallback)
+# codellama:34b = sha256:POPULATE_AFTER_PULL
+# qwen2.5-coder:32b = sha256:POPULATE_AFTER_PULL
+
+# Insight Generation (lightweight)
+# llama3.2:3b = sha256:POPULATE_AFTER_PULL
+# llama3.1:8b = sha256:POPULATE_AFTER_PULL

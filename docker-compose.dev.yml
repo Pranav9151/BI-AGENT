@@ -1,0 +1,39 @@
+# =============================================================================
+# Smart BI Agent — Docker Compose Development Overrides
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# =============================================================================
+
+services:
+  backend:
+    build:
+      target: development
+    environment:
+      - APP_ENV=development
+    volumes:
+      - ./backend:/app:cached
+      - jwt_keys:/app/keys
+    ports:
+      - "8000:8000"  # Direct backend access for debugging
+    command: >
+      uvicorn app.main:app
+        --host 0.0.0.0
+        --port 8000
+        --reload
+        --reload-dir /app/app
+        --log-level debug
+
+  frontend:
+    volumes:
+      - ./frontend:/app:cached
+      - /app/node_modules
+    ports:
+      - "3000:3000"  # Vite dev server
+    command: npm run dev -- --host 0.0.0.0
+
+  db:
+    ports:
+      - "5432:5432"  # Direct DB access for debugging
+
+  redis:
+    ports:
+      - "6379:6379"  # Direct Redis access for debugging

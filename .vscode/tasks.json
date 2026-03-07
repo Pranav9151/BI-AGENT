@@ -1,0 +1,127 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "🚀 Dev: Start All Services",
+            "type": "shell",
+            "command": "make dev",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "🚀 Dev: Start Detached",
+            "type": "shell",
+            "command": "make dev-d",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "🛑 Stop All Services",
+            "type": "shell",
+            "command": "make down",
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "🧪 Test: Run All",
+            "type": "shell",
+            "command": "make test",
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "🔒 Test: Security Only",
+            "type": "shell",
+            "command": "make test-security",
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "📊 Test: With Coverage",
+            "type": "shell",
+            "command": "make test-cov",
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "🔍 Lint: Check",
+            "type": "shell",
+            "command": "make lint",
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "🔧 Lint: Auto-Fix",
+            "type": "shell",
+            "command": "make lint-fix",
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "🗃️ DB: Run Migrations",
+            "type": "shell",
+            "command": "make migrate",
+            "problemMatcher": []
+        },
+        {
+            "label": "🗃️ DB: Generate Migration",
+            "type": "shell",
+            "command": "make migrate-gen msg=\"${input:migrationMessage}\"",
+            "problemMatcher": []
+        },
+        {
+            "label": "🗃️ DB: Open Shell",
+            "type": "shell",
+            "command": "make db-shell",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "📋 Logs: Backend",
+            "type": "shell",
+            "command": "make logs-backend",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
+            "problemMatcher": [],
+            "isBackground": true
+        },
+        {
+            "label": "🔐 Security: Audit Dependencies",
+            "type": "shell",
+            "command": "make audit",
+            "problemMatcher": []
+        },
+        {
+            "label": "🔑 Setup: Generate JWT Keys",
+            "type": "shell",
+            "command": "make keys",
+            "problemMatcher": []
+        }
+    ],
+    "inputs": [
+        {
+            "id": "migrationMessage",
+            "type": "promptString",
+            "description": "Migration description (e.g., 'add totp fields to users')"
+        }
+    ]
+}

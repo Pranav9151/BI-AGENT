@@ -1,0 +1,152 @@
+[project]
+name = "smart-bi-agent"
+version = "3.1.0"
+description = "AI-powered Business Intelligence platform — Natural Language to SQL"
+requires-python = ">=3.12"
+license = {text = "Proprietary"}
+authors = [
+    {name = "Waqar", email = "waqar@smartbiagent.com"},
+]
+
+dependencies = [
+    # === Framework & Server ===
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.34.0",
+    "python-multipart==0.0.18",
+    "httpx==0.27.0",
+
+    # === Database ===
+    "sqlalchemy[asyncio]==2.0.36",
+    "asyncpg==0.30.0",
+    "alembic==1.14.1",
+    "greenlet==3.1.1",
+
+    # === Multi-DB Drivers ===
+    "aiomysql==0.2.0",
+    # aioodbc pinned separately (MSSQL) — requires unixODBC system lib
+    "google-cloud-bigquery==3.27.0",
+    "snowflake-connector-python==3.12.3",
+
+    # === Redis ===
+    "redis[hiredis]==5.2.1",
+
+    # === Auth & Crypto ===
+    "python-jose[cryptography]==3.3.0",
+    "passlib[bcrypt]==1.7.4",
+    "bcrypt==4.2.1",
+    "cryptography==44.0.0",
+    "pyotp==2.9.0",
+    "qrcode[pil]==8.0",
+
+    # === SQL Parsing ===
+    "sqlglot==25.34.0",
+
+    # === LLM Providers (BYOK — all pinned per v3.1) ===
+    "openai==1.35.3",
+    "anthropic==0.29.0",
+    "google-generativeai==0.7.2",
+    "groq==0.9.0",
+    "tiktoken==0.7.0",
+
+    # === Scheduling ===
+    "apscheduler==3.10.4",
+
+    # === Notifications ===
+    "slack-bolt==1.21.3",
+    "pymsteams==0.2.3",
+    "aiosmtplib==3.0.2",
+
+    # === Export ===
+    "openpyxl==3.1.5",
+    "weasyprint==63.1",
+
+    # === Logging ===
+    "structlog==24.4.0",
+    "python-json-logger==2.0.7",
+
+    # === Utilities ===
+    "pydantic==2.10.3",
+    "pydantic-settings==2.7.0",
+    "email-validator==2.2.0",
+    "python-dotenv==1.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.25.0",
+    "pytest-cov==6.0.0",
+    "pytest-xdist==3.5.0",
+    "ruff==0.8.4",
+    "mypy==1.14.1",
+    "factory-boy==3.3.1",
+    "faker==33.1.0",
+    "respx==0.22.0",
+    "pip-audit==2.7.3",
+    "pip-compile-multi==2.6.4",
+]
+
+test = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.25.0",
+    "pytest-cov==6.0.0",
+    "httpx==0.27.0",
+    "respx==0.22.0",
+]
+
+[build-system]
+requires = ["setuptools>=75.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+# =============================================================================
+# Tool Configuration
+# =============================================================================
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["backend/app"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "S",    # bandit (security)
+    "B",    # bugbear
+    "A",    # builtins
+    "T20",  # print statements
+    "SIM",  # simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "S101",   # assert allowed in tests
+    "S104",   # hardcoded bind-all (we control via Docker)
+    "B008",   # Depends() in function args (FastAPI pattern)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S106"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+markers = [
+    "security: Security-critical tests (run always in CI)",
+    "integration: Integration tests (require running services)",
+    "slow: Slow tests (skip in quick runs)",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy", "sqlalchemy.ext.mypy.plugin"]
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true

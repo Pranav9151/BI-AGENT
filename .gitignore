@@ -1,0 +1,63 @@
+# =============================================================================
+# Smart BI Agent — .gitignore
+# =============================================================================
+
+# --- Secrets (NEVER commit) ---
+.env
+*.pem
+*.key
+keys/
+jwt_keys/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# --- Testing ---
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# --- Linting & Type Checking ---
+.ruff_cache/
+.mypy_cache/
+dmypy.json
+
+# --- Node / Frontend ---
+node_modules/
+frontend/dist/
+frontend/build/
+.vite/
+*.tsbuildinfo
+
+# --- IDE ---
+.vscode/settings.json
+.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- Docker ---
+docker-compose.override.yml
+
+# --- Backups ---
+*.sql.gz
+backups/
+
+# --- OS ---
+Thumbs.db
+.DS_Store

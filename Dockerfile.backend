@@ -1,0 +1,77 @@
+# =============================================================================
+# Smart BI Agent — Backend Dockerfile (Multi-stage)
+# =============================================================================
+
+# --- Base stage ---
+FROM python:3.12-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# System dependencies (for asyncpg, cryptography, weasyprint)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    libffi-dev \
+    libssl-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Development stage ---
+FROM base AS development
+
+COPY backend/pyproject.toml /app/pyproject.toml
+RUN pip install -e ".[dev]" --break-system-packages 2>/dev/null || pip install -e ".[dev]"
+
+# Source mounted as volume in dev
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+# --- Production dependencies ---
+FROM base AS deps
+
+COPY pyproject.toml /app/pyproject.toml
+COPY backend/ /app/
+
+RUN pip install . --break-system-packages 2>/dev/null || pip install .
+
+# --- Production stage ---
+FROM python:3.12-slim AS production
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Runtime-only system deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user for security
+RUN groupadd -r sbi && useradd -r -g sbi -d /app -s /sbin/nologin sbi
+
+# Copy installed packages from deps stage
+COPY --from=deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=deps /usr/local/bin /usr/local/bin
+
+# Copy application code
+COPY backend/app /app/app
+COPY backend/alembic /app/alembic
+COPY backend/alembic/alembic.ini /app/alembic.ini
+
+# Ensure proper ownership
+RUN chown -R sbi:sbi /app
+
+USER sbi
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=15s \
+    CMD curl -sf http://localhost:8000/health || exit 1
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--log-level", "info"]

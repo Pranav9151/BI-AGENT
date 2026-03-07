@@ -1,0 +1,21 @@
+{
+    "recommendations": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "ms-python.mypy-type-checker",
+        "ms-python.debugpy",
+        "ms-azuretools.vscode-docker",
+        "dbaeumer.vscode-eslint",
+        "bradlc.vscode-tailwindcss",
+        "esbenp.prettier-vscode",
+        "eamodio.gitlens",
+        "usernamehw.errorlens",
+        "ms-vscode.makefile-tools",
+        "mtxr.sqltools",
+        "cweijan.vscode-postgresql-client2",
+        "redhat.vscode-yaml",
+        "ms-vscode-remote.remote-containers",
+        "GitHub.copilot"
+    ]
+}

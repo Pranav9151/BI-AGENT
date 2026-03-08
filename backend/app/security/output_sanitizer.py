@@ -204,6 +204,12 @@ def validate_chart_config(config: Any) -> Optional[dict]:
         if key not in VALID_CHART_KEYS:
             continue  # Silently drop unknown keys
 
+        # Chart type — strict whitelist (must come before STRING_FIELDS check)
+        if key == "type":
+            if isinstance(value, str) and value in VALID_CHART_TYPES:
+                validated[key] = value
+            continue  # Skip to next key regardless
+
         # Validate string fields
         if key in STRING_FIELDS:
             if not isinstance(value, str):
@@ -211,10 +217,6 @@ def validate_chart_config(config: Any) -> Optional[dict]:
             if _DANGEROUS_PATTERNS.search(value):
                 continue  # Drop dangerous values
             validated[key] = value[:200]  # Truncate long strings
-
-        elif key == "type":
-            if value in VALID_CHART_TYPES:
-                validated[key] = value
 
         elif key in ("stacked", "horizontal", "show_legend", "show_grid", "show_values"):
             validated[key] = bool(value)

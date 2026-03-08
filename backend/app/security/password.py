@@ -6,6 +6,9 @@ bcrypt cost factor 12 — intentionally slow to resist brute force.
 
 from __future__ import annotations
 
+import hashlib
+import base64
+
 from passlib.context import CryptContext
 
 # bcrypt with cost factor 12
@@ -16,6 +19,24 @@ pwd_context = CryptContext(
     deprecated="auto",
     bcrypt__rounds=12,
 )
+
+
+def _prepare_password(password: str) -> str:
+    """
+    Prepare password for bcrypt.
+
+    bcrypt has a 72-byte input limit. Passwords longer than 72 bytes
+    are pre-hashed with SHA-256 and base64-encoded, which produces a
+    fixed 44-character string that bcrypt can handle safely.
+
+    This is a standard pattern used by Dropbox and Django.
+    """
+    password_bytes = password.encode("utf-8")
+    if len(password_bytes) > 72:
+        # Pre-hash with SHA-256 → base64 encode → 44 chars (fits in 72 bytes)
+        sha_hash = hashlib.sha256(password_bytes).digest()
+        return base64.b64encode(sha_hash).decode("ascii")
+    return password
 
 
 def hash_password(password: str) -> str:
@@ -30,7 +51,8 @@ def hash_password(password: str) -> str:
     """
     if not password:
         raise ValueError("Password cannot be empty")
-    return pwd_context.hash(password)
+    prepared = _prepare_password(password)
+    return pwd_context.hash(prepared)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -47,7 +69,8 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
     if not plain_password or not hashed_password:
         return False
-    return pwd_context.verify(plain_password, hashed_password)
+    prepared = _prepare_password(plain_password)
+    return pwd_context.verify(prepared, hashed_password)
 
 
 def needs_rehash(hashed_password: str) -> bool:

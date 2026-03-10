@@ -256,8 +256,8 @@ class Settings(BaseSettings):
 
     @property
     def swagger_enabled(self) -> bool:
-        """Swagger/OpenAPI disabled in production (T54)."""
-        return not self.is_production
+        """Swagger/OpenAPI enabled in development only (T54)."""
+        return self.is_development
 
     @property
     def redis_cache_url(self) -> str:

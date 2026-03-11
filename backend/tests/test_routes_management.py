@@ -1831,3 +1831,733 @@ class TestSchemaHelpers:
     def test_lock_key_format(self):
         from app.api.v1.routes_schema import _lock_key
         assert _lock_key("conn-abc") == "schema_lock:conn-abc"
+
+# =============================================================================
+# ███████╗ ██████╗██╗  ██╗███████╗███╗   ███╗ █████╗   (Component 12)
+# =============================================================================
+
+
+_llm_PROVIDER_ID = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+_llm_ENCRYPTED_KEY = "v1:ENCRYPTED_LLM_KEY_PLACEHOLDER"
+
+
+def _llm_make_provider(**kwargs) -> MagicMock:
+    """Factory: default LLMProvider ORM mock."""
+    p = MagicMock()
+    p.id = uuid.UUID(_llm_PROVIDER_ID)
+    p.name = "Company OpenAI"
+    p.provider_type = "openai"
+    p.encrypted_api_key = _llm_ENCRYPTED_KEY
+    p.base_url = None
+    p.model_sql = "gpt-4o"
+    p.model_insight = "gpt-4o-mini"
+    p.model_suggestion = "gpt-4o-mini"
+    p.max_tokens_sql = 2048
+    p.max_tokens_insight = 1024
+    p.temperature_sql = 0.1
+    p.temperature_insight = 0.3
+    p.is_active = True
+    p.is_default = False
+    p.priority = 1
+    p.daily_token_budget = 1_000_000
+    p.data_residency = "us"
+    p.created_by = uuid.UUID(_ADMIN_ID)
+    p.created_at = _FIXED_NOW
+    p.updated_at = _FIXED_NOW
+    for k, v in kwargs.items():
+        setattr(p, k, v)
+    return p
+
+
+def _llm_make_db(
+    row=None,
+    rows: Optional[list] = None,
+    count: Optional[int] = None,
+) -> AsyncMock:
+    """
+    Build an AsyncSession mock for LLM provider tests.
+
+    When rows is supplied: first execute → scalar count, second → scalars list.
+    When row is supplied: every execute → scalar_one_or_none returning that row.
+    """
+    session = AsyncMock()
+    session.commit = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    session.delete = MagicMock()
+
+    if rows is not None:
+        total = count if count is not None else len(rows)
+        count_result = MagicMock()
+        count_result.scalar.return_value = total
+        list_result = MagicMock()
+        scalars_mock = MagicMock()
+        scalars_mock.all.return_value = rows
+        list_result.scalars.return_value = scalars_mock
+        session.execute = AsyncMock(side_effect=[count_result, list_result])
+    else:
+        single = MagicMock()
+        single.scalar_one_or_none.return_value = row
+        # update() calls also go through execute — make it reusable
+        session.execute = AsyncMock(return_value=single)
+
+    return session
+
+
+def _llm_make_key_manager(
+    decrypt_return: str = "sk-test1234",
+    encrypt_return: str = _llm_ENCRYPTED_KEY,
+) -> MagicMock:
+    """Build a KeyManager mock that encrypt/decrypt predictably."""
+    km = MagicMock()
+    km.encrypt.return_value = encrypt_return
+    km.decrypt.return_value = decrypt_return
+    return km
+
+
+def _llm_build_app() -> "FastAPI":
+    from app.api.v1.routes_llm_providers import router as llm_router
+    app = FastAPI()
+    app.include_router(llm_router, prefix="/api/v1/llm-providers", tags=["llm-providers"])
+    register_exception_handlers(app)
+    return app
+
+
+def _llm_make_client(
+    db=None,
+    audit=None,
+    key_manager=None,
+) -> TestClient:
+    app = _llm_build_app()
+    mock_db = db or _llm_make_db()
+    mock_audit = audit or _make_audit()
+    mock_km = key_manager or _llm_make_key_manager()
+
+    async def override_db():
+        yield mock_db
+
+    from app.dependencies import require_admin, get_db, get_audit_writer, get_key_manager
+    app.dependency_overrides.update({
+        require_admin: lambda: _ADMIN_DICT,
+        get_db: override_db,
+        get_audit_writer: lambda: mock_audit,
+        get_key_manager: lambda: mock_km,
+    })
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _llm_make_non_admin_client() -> TestClient:
+    app = _llm_build_app()
+
+    def _reject():
+        raise AdminRequiredError()
+
+    from app.dependencies import require_admin, get_db, get_audit_writer, get_key_manager
+    app.dependency_overrides.update({
+        require_admin: _reject,
+        get_db: lambda: (_ for _ in ()).throw(Exception("should not reach")),
+        get_audit_writer: lambda: _make_audit(),
+        get_key_manager: lambda: _llm_make_key_manager(),
+    })
+    return TestClient(app, raise_server_exceptions=False)
+
+
+# ---------------------------------------------------------------------------
+# Test classes — LLM Providers
+# ---------------------------------------------------------------------------
+
+class TestLLMProviderList:
+    def test_list_returns_200(self):
+        resp = _llm_make_client(
+            db=_llm_make_db(rows=[_llm_make_provider()])
+        ).get("/api/v1/llm-providers/")
+        assert resp.status_code == 200
+
+    def test_list_returns_providers_array(self):
+        resp = _llm_make_client(
+            db=_llm_make_db(rows=[_llm_make_provider()])
+        ).get("/api/v1/llm-providers/")
+        body = resp.json()
+        assert "providers" in body and len(body["providers"]) == 1
+
+    def test_list_includes_total_skip_limit(self):
+        resp = _llm_make_client(
+            db=_llm_make_db(rows=[])
+        ).get("/api/v1/llm-providers/")
+        body = resp.json()
+        assert "total" in body and "skip" in body and "limit" in body
+
+    def test_list_non_admin_returns_403(self):
+        assert _llm_make_non_admin_client().get("/api/v1/llm-providers/").status_code == 403
+
+    def test_list_response_has_key_prefix_not_full_key(self):
+        km = _llm_make_key_manager(decrypt_return="sk-ABCDEFGHIJKLMNOP")
+        resp = _llm_make_client(
+            db=_llm_make_db(rows=[_llm_make_provider()]),
+            key_manager=km,
+        ).get("/api/v1/llm-providers/")
+        provider = resp.json()["providers"][0]
+        assert "key_prefix" in provider
+        # Must start with the first 8 chars of the key
+        assert provider["key_prefix"].startswith("sk-ABCDE")
+
+    def test_list_response_has_no_raw_encrypted_key(self):
+        resp = _llm_make_client(
+            db=_llm_make_db(rows=[_llm_make_provider()])
+        ).get("/api/v1/llm-providers/")
+        provider_json = resp.json()["providers"][0]
+        assert "encrypted_api_key" not in provider_json
+
+    def test_list_ollama_provider_key_prefix_is_none(self):
+        km = _llm_make_key_manager()
+        resp = _llm_make_client(
+            db=_llm_make_db(rows=[_llm_make_provider(provider_type="ollama", encrypted_api_key=None)]),
+            key_manager=km,
+        ).get("/api/v1/llm-providers/")
+        assert resp.json()["providers"][0]["key_prefix"] is None
+
+    def test_list_empty_returns_zero_total(self):
+        resp = _llm_make_client(db=_llm_make_db(rows=[])).get("/api/v1/llm-providers/")
+        assert resp.json()["total"] == 0
+
+
+class TestLLMProviderGet:
+    def test_get_existing_returns_200(self):
+        resp = _llm_make_client(
+            db=_llm_make_db(row=_llm_make_provider())
+        ).get(f"/api/v1/llm-providers/{_llm_PROVIDER_ID}")
+        assert resp.status_code == 200
+
+    def test_get_missing_returns_404(self):
+        assert _llm_make_client(
+            db=_llm_make_db(row=None)
+        ).get(f"/api/v1/llm-providers/{_llm_PROVIDER_ID}").status_code == 404
+
+    def test_get_returns_provider_id_field(self):
+        resp = _llm_make_client(
+            db=_llm_make_db(row=_llm_make_provider())
+        ).get(f"/api/v1/llm-providers/{_llm_PROVIDER_ID}")
+        assert resp.json()["provider_id"] == _llm_PROVIDER_ID
+
+    def test_get_returns_is_default_field(self):
+        resp = _llm_make_client(
+            db=_llm_make_db(row=_llm_make_provider(is_default=True))
+        ).get(f"/api/v1/llm-providers/{_llm_PROVIDER_ID}")
+        assert resp.json()["is_default"] is True
+
+    def test_get_non_admin_returns_403(self):
+        assert _llm_make_non_admin_client().get(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}"
+        ).status_code == 403
+
+
+class TestLLMProviderCreate:
+    _VALID_BODY = {
+        "name": "Test OpenAI",
+        "provider_type": "openai",
+        "api_key": "sk-test-key-123",
+        "model_sql": "gpt-4o",
+        "model_insight": "gpt-4o-mini",
+    }
+
+    def test_create_returns_201(self):
+        resp = _llm_make_client(db=_llm_make_db(row=None)).post(
+            "/api/v1/llm-providers/", json=self._VALID_BODY
+        )
+        assert resp.status_code == 201
+
+    def test_create_response_has_no_api_key(self):
+        body = _llm_make_client(db=_llm_make_db(row=None)).post(
+            "/api/v1/llm-providers/", json=self._VALID_BODY
+        ).json()
+        assert "api_key" not in body
+        assert "encrypted_api_key" not in body
+
+    def test_create_calls_encrypt_with_llm_purpose(self):
+        km = _llm_make_key_manager()
+        _llm_make_client(db=_llm_make_db(row=None), key_manager=km).post(
+            "/api/v1/llm-providers/", json=self._VALID_BODY
+        )
+        from app.security.key_manager import KeyPurpose
+        km.encrypt.assert_called_once()
+        call_args = km.encrypt.call_args
+        assert call_args.args[1] == KeyPurpose.LLM_API_KEYS
+
+    def test_create_key_encrypted_before_db_add(self):
+        km = _llm_make_key_manager(encrypt_return="v1:CIPHER")
+        db = _llm_make_db(row=None)
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["provider"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _llm_make_client(db=db, key_manager=km).post(
+            "/api/v1/llm-providers/", json=self._VALID_BODY
+        )
+        if captured.get("provider"):
+            assert captured["provider"].encrypted_api_key == "v1:CIPHER"
+
+    def test_create_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _llm_make_client(db=_llm_make_db(row=None), audit=mock_audit).post(
+            "/api/v1/llm-providers/", json=self._VALID_BODY
+        )
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "llm_provider.created"
+
+    def test_create_cloud_provider_missing_api_key_returns_422(self):
+        body = {**self._VALID_BODY}
+        del body["api_key"]
+        resp = _llm_make_client(db=_llm_make_db(row=None)).post(
+            "/api/v1/llm-providers/", json=body
+        )
+        assert resp.status_code == 422
+
+    def test_create_duplicate_name_returns_409(self):
+        existing = _llm_make_provider(name="Test OpenAI")
+        resp = _llm_make_client(db=_llm_make_db(row=existing)).post(
+            "/api/v1/llm-providers/", json=self._VALID_BODY
+        )
+        assert resp.status_code == 409
+
+    def test_create_non_admin_returns_403(self):
+        assert _llm_make_non_admin_client().post(
+            "/api/v1/llm-providers/", json=self._VALID_BODY
+        ).status_code == 403
+
+    def test_create_ollama_without_base_url_returns_422(self):
+        body = {
+            "name": "Local Ollama",
+            "provider_type": "ollama",
+            "model_sql": "llama3.3:70b",
+        }
+        resp = _llm_make_client(db=_llm_make_db(row=None)).post(
+            "/api/v1/llm-providers/", json=body
+        )
+        assert resp.status_code == 422
+
+    def test_create_ollama_ssrf_blocked_returns_400(self):
+        body = {
+            "name": "Unsafe Ollama",
+            "provider_type": "ollama",
+            "model_sql": "llama3.3:70b",
+            "base_url": "http://169.254.169.254/ollama",
+        }
+        with patch(
+            "app.api.v1.routes_llm_providers.validate_url",
+            side_effect=GuardSSRFError("Blocked: metadata IP"),
+        ) as mock_ssrf:
+            resp = _llm_make_client(db=_llm_make_db(row=None)).post(
+                "/api/v1/llm-providers/", json=body
+            )
+        assert resp.status_code == 400
+
+    def test_create_is_default_sets_flag(self):
+        db = _llm_make_db(row=None)
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["provider"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _llm_make_client(db=db).post(
+            "/api/v1/llm-providers/",
+            json={**self._VALID_BODY, "is_default": True},
+        )
+        if captured.get("provider"):
+            assert captured["provider"].is_default is True
+
+    def test_create_audit_message_does_not_contain_api_key(self):
+        mock_audit = _make_audit()
+        raw_key = "sk-SUPERSECRET"
+        _llm_make_client(db=_llm_make_db(row=None), audit=mock_audit).post(
+            "/api/v1/llm-providers/", json={**self._VALID_BODY, "api_key": raw_key}
+        )
+        question = mock_audit.log.call_args.kwargs["question"]
+        assert raw_key not in question
+
+    def test_create_response_has_provider_id(self):
+        resp = _llm_make_client(db=_llm_make_db(row=None)).post(
+            "/api/v1/llm-providers/", json=self._VALID_BODY
+        )
+        assert resp.status_code == 201 and "provider_id" in resp.json()
+
+
+class TestLLMProviderUpdate:
+    def test_update_name_returns_200(self):
+        p = _llm_make_provider()
+        resp = _llm_make_client(db=_llm_make_db(row=p)).patch(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}",
+            json={"name": "Renamed Provider"},
+        )
+        assert resp.status_code == 200
+
+    def test_update_name_mutates_model(self):
+        p = _llm_make_provider()
+        _llm_make_client(db=_llm_make_db(row=p)).patch(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}",
+            json={"name": "Renamed Provider"},
+        )
+        assert p.name == "Renamed Provider"
+
+    def test_update_missing_returns_404(self):
+        assert _llm_make_client(db=_llm_make_db(row=None)).patch(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}", json={"name": "X"}
+        ).status_code == 404
+
+    def test_update_api_key_calls_encrypt(self):
+        km = _llm_make_key_manager()
+        _llm_make_client(db=_llm_make_db(row=_llm_make_provider()), key_manager=km).patch(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}",
+            json={"api_key": "sk-new-key"},
+        )
+        from app.security.key_manager import KeyPurpose
+        km.encrypt.assert_called_once()
+        assert km.encrypt.call_args.args[1] == KeyPurpose.LLM_API_KEYS
+
+    def test_update_omitting_api_key_does_not_call_encrypt(self):
+        km = _llm_make_key_manager()
+        _llm_make_client(db=_llm_make_db(row=_llm_make_provider()), key_manager=km).patch(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}",
+            json={"name": "No Key Change"},
+        )
+        km.encrypt.assert_not_called()
+
+    def test_update_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _llm_make_client(
+            db=_llm_make_db(row=_llm_make_provider()), audit=mock_audit
+        ).patch(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}", json={"name": "New"}
+        )
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "llm_provider.updated"
+
+    def test_update_model_sql(self):
+        p = _llm_make_provider()
+        _llm_make_client(db=_llm_make_db(row=p)).patch(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}",
+            json={"model_sql": "gpt-4-turbo"},
+        )
+        assert p.model_sql == "gpt-4-turbo"
+
+    def test_update_non_admin_returns_403(self):
+        assert _llm_make_non_admin_client().patch(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}", json={"name": "x"}
+        ).status_code == 403
+
+
+class TestLLMProviderDeactivate:
+    def test_deactivate_returns_204(self):
+        resp = _llm_make_client(db=_llm_make_db(row=_llm_make_provider())).delete(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}"
+        )
+        assert resp.status_code == 204
+
+    def test_deactivate_sets_is_active_false(self):
+        p = _llm_make_provider(is_active=True)
+        _llm_make_client(db=_llm_make_db(row=p)).delete(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}"
+        )
+        assert p.is_active is False
+
+    def test_deactivate_clears_is_default(self):
+        p = _llm_make_provider(is_default=True)
+        _llm_make_client(db=_llm_make_db(row=p)).delete(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}"
+        )
+        assert p.is_default is False
+
+    def test_deactivate_missing_returns_404(self):
+        assert _llm_make_client(db=_llm_make_db(row=None)).delete(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}"
+        ).status_code == 404
+
+    def test_deactivate_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _llm_make_client(
+            db=_llm_make_db(row=_llm_make_provider()), audit=mock_audit
+        ).delete(f"/api/v1/llm-providers/{_llm_PROVIDER_ID}")
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "llm_provider.deactivated"
+
+    def test_deactivate_non_admin_returns_403(self):
+        assert _llm_make_non_admin_client().delete(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}"
+        ).status_code == 403
+
+
+class TestLLMProviderSetDefault:
+    def test_set_default_returns_200(self):
+        resp = _llm_make_client(db=_llm_make_db(row=_llm_make_provider(is_active=True))).post(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}/set-default"
+        )
+        assert resp.status_code == 200
+
+    def test_set_default_response_has_is_default_true(self):
+        resp = _llm_make_client(db=_llm_make_db(row=_llm_make_provider(is_active=True))).post(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}/set-default"
+        )
+        assert resp.json()["is_default"] is True
+
+    def test_set_default_deactivated_provider_returns_422(self):
+        resp = _llm_make_client(
+            db=_llm_make_db(row=_llm_make_provider(is_active=False))
+        ).post(f"/api/v1/llm-providers/{_llm_PROVIDER_ID}/set-default")
+        assert resp.status_code == 422
+
+    def test_set_default_missing_returns_404(self):
+        assert _llm_make_client(db=_llm_make_db(row=None)).post(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}/set-default"
+        ).status_code == 404
+
+    def test_set_default_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _llm_make_client(
+            db=_llm_make_db(row=_llm_make_provider(is_active=True)), audit=mock_audit
+        ).post(f"/api/v1/llm-providers/{_llm_PROVIDER_ID}/set-default")
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "llm_provider.set_default"
+
+    def test_set_default_non_admin_returns_403(self):
+        assert _llm_make_non_admin_client().post(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}/set-default"
+        ).status_code == 403
+
+    def test_set_default_response_has_message_field(self):
+        resp = _llm_make_client(db=_llm_make_db(row=_llm_make_provider(is_active=True))).post(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}/set-default"
+        )
+        assert "message" in resp.json()
+
+
+class TestLLMProviderTest:
+    def test_test_deactivated_provider_returns_failure(self):
+        resp = _llm_make_client(
+            db=_llm_make_db(row=_llm_make_provider(is_active=False))
+        ).post(f"/api/v1/llm-providers/{_llm_PROVIDER_ID}/test")
+        assert resp.status_code == 200 and resp.json()["success"] is False
+
+    def test_test_missing_returns_404(self):
+        assert _llm_make_client(db=_llm_make_db(row=None)).post(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}/test"
+        ).status_code == 404
+
+    def test_test_decrypt_failure_returns_failure_response(self):
+        km = _llm_make_key_manager()
+        km.decrypt.side_effect = Exception("Decryption failed")
+        resp = _llm_make_client(
+            db=_llm_make_db(row=_llm_make_provider(is_active=True)),
+            key_manager=km,
+        ).post(f"/api/v1/llm-providers/{_llm_PROVIDER_ID}/test")
+        assert resp.status_code == 200 and resp.json()["success"] is False
+
+    def test_test_response_has_provider_type_and_model_used(self):
+        km = _llm_make_key_manager()
+        km.decrypt.side_effect = Exception("fail")
+        resp = _llm_make_client(
+            db=_llm_make_db(row=_llm_make_provider(is_active=True)),
+            key_manager=km,
+        ).post(f"/api/v1/llm-providers/{_llm_PROVIDER_ID}/test")
+        body = resp.json()
+        assert "provider_type" in body and "model_used" in body
+
+    def test_test_non_admin_returns_403(self):
+        assert _llm_make_non_admin_client().post(
+            f"/api/v1/llm-providers/{_llm_PROVIDER_ID}/test"
+        ).status_code == 403
+
+    def test_test_successful_probe_returns_success_true(self):
+        with patch(
+            "app.api.v1.routes_llm_providers._run_provider_probe",
+            return_value=(True, None),
+        ):
+            resp = _llm_make_client(
+                db=_llm_make_db(row=_llm_make_provider(is_active=True))
+            ).post(f"/api/v1/llm-providers/{_llm_PROVIDER_ID}/test")
+        assert resp.json()["success"] is True
+
+    def test_test_failed_probe_returns_success_false_with_error(self):
+        with patch(
+            "app.api.v1.routes_llm_providers._run_provider_probe",
+            return_value=(False, "Connection timed out"),
+        ):
+            resp = _llm_make_client(
+                db=_llm_make_db(row=_llm_make_provider(is_active=True))
+            ).post(f"/api/v1/llm-providers/{_llm_PROVIDER_ID}/test")
+        body = resp.json()
+        assert body["success"] is False and body["error"] == "Connection timed out"
+
+
+class TestLLMProviderModels:
+    def test_models_returns_200(self):
+        assert _llm_make_client().get("/api/v1/llm-providers/models").status_code == 200
+
+    def test_models_contains_all_six_providers(self):
+        body = _llm_make_client().get("/api/v1/llm-providers/models").json()
+        providers = body["providers"]
+        for pt in ("openai", "claude", "gemini", "groq", "deepseek", "ollama"):
+            assert pt in providers
+
+    def test_models_each_has_sql_entries(self):
+        body = _llm_make_client().get("/api/v1/llm-providers/models").json()
+        for provider_type, entries in body["providers"].items():
+            sql_entries = [e for e in entries if e["use_case"] == "sql"]
+            assert len(sql_entries) >= 1, f"No SQL models for {provider_type}"
+
+    def test_models_has_exactly_one_default_sql_per_provider(self):
+        body = _llm_make_client().get("/api/v1/llm-providers/models").json()
+        for provider_type, entries in body["providers"].items():
+            defaults = [e for e in entries if e["use_case"] == "sql" and e["is_default"]]
+            assert len(defaults) == 1, f"{provider_type} should have exactly 1 default SQL model"
+
+    def test_models_non_admin_returns_403(self):
+        assert _llm_make_non_admin_client().get(
+            "/api/v1/llm-providers/models"
+        ).status_code == 403
+
+    def test_models_claude_contains_sonnet(self):
+        body = _llm_make_client().get("/api/v1/llm-providers/models").json()
+        model_ids = [e["model_id"] for e in body["providers"]["claude"]]
+        assert any("sonnet" in m for m in model_ids)
+
+    def test_models_ollama_contains_codellama(self):
+        body = _llm_make_client().get("/api/v1/llm-providers/models").json()
+        model_ids = [e["model_id"] for e in body["providers"]["ollama"]]
+        assert any("codellama" in m for m in model_ids)
+
+
+class TestLLMProviderSchemas:
+    """Pydantic v2 schema validation for LLM provider management."""
+
+    def test_create_request_provider_type_enum_rejects_invalid(self):
+        from app.schemas.llm_provider import LLMProviderCreateRequest
+        from pydantic import ValidationError as PydanticError
+        with pytest.raises(PydanticError):
+            LLMProviderCreateRequest(
+                name="Bad",
+                provider_type="unknown_llm",
+                model_sql="gpt-4o",
+            )
+
+    def test_create_request_requires_name_and_model_sql(self):
+        from app.schemas.llm_provider import LLMProviderCreateRequest
+        from pydantic import ValidationError as PydanticError
+        with pytest.raises(PydanticError):
+            LLMProviderCreateRequest(provider_type="openai")
+
+    def test_create_request_defaults(self):
+        from app.schemas.llm_provider import LLMProviderCreateRequest
+        req = LLMProviderCreateRequest(
+            name="Test",
+            provider_type="openai",
+            api_key="sk-x",
+            model_sql="gpt-4o",
+        )
+        assert req.max_tokens_sql == 2048
+        assert req.temperature_sql == 0.1
+        assert req.is_default is False
+        assert req.priority == 99
+
+    def test_update_request_all_optional(self):
+        from app.schemas.llm_provider import LLMProviderUpdateRequest
+        req = LLMProviderUpdateRequest()
+        assert req.name is None
+        assert req.api_key is None
+        assert req.model_sql is None
+
+    def test_data_residency_enum_values(self):
+        from app.schemas.llm_provider import DataResidency
+        assert set(DataResidency) == {
+            DataResidency.us, DataResidency.eu, DataResidency.cn,
+            DataResidency.local, DataResidency.unknown,
+        }
+
+    def test_provider_type_enum_has_all_six(self):
+        from app.schemas.llm_provider import ProviderType
+        assert set(pt.value for pt in ProviderType) == {
+            "openai", "claude", "gemini", "groq", "deepseek", "ollama"
+        }
+
+    def test_response_schema_has_no_api_key_field(self):
+        from app.schemas.llm_provider import LLMProviderResponse
+        fields = LLMProviderResponse.model_fields
+        assert "api_key" not in fields
+        assert "encrypted_api_key" not in fields
+
+    def test_list_response_schema(self):
+        from app.schemas.llm_provider import LLMProviderListResponse
+        r = LLMProviderListResponse(providers=[], total=0, skip=0, limit=50)
+        assert r.providers == [] and r.total == 0
+
+    def test_test_response_schema(self):
+        from app.schemas.llm_provider import LLMProviderTestResponse
+        r = LLMProviderTestResponse(success=True, provider_type="openai", model_used="gpt-4o", latency_ms=220)
+        assert r.success is True and r.latency_ms == 220
+
+    def test_set_default_response_schema(self):
+        from app.schemas.llm_provider import LLMProviderSetDefaultResponse
+        r = LLMProviderSetDefaultResponse(
+            provider_id=_llm_PROVIDER_ID, name="Test", is_default=True, message="OK"
+        )
+        assert r.is_default is True
+
+
+class TestLLMProviderKeySecurityInvariants:
+    """
+    Invariant tests for T12 — LLM API key exposure prevention.
+    These tests explicitly verify the security boundary.
+    """
+
+    def test_key_prefix_truncated_to_8_chars_plus_ellipsis(self):
+        km = _llm_make_key_manager(decrypt_return="sk-1234567890ABCDEF")
+        resp = _llm_make_client(
+            db=_llm_make_db(rows=[_llm_make_provider()]),
+            key_manager=km,
+        ).get("/api/v1/llm-providers/")
+        prefix = resp.json()["providers"][0]["key_prefix"]
+        # Should be exactly 8 chars + "..."
+        assert prefix == "sk-12345..."
+
+    def test_full_key_never_in_create_response(self):
+        raw_key = "sk-FULLKEYTHATSHOULDBEHIDDEN"
+        km = _llm_make_key_manager(encrypt_return="v1:CIPHER")
+        resp = _llm_make_client(db=_llm_make_db(row=None), key_manager=km).post(
+            "/api/v1/llm-providers/",
+            json={
+                "name": "Test",
+                "provider_type": "openai",
+                "api_key": raw_key,
+                "model_sql": "gpt-4o",
+            },
+        )
+        # The raw key must not appear anywhere in the response
+        assert raw_key not in resp.text
+
+    def test_key_is_encrypted_not_stored_plaintext(self):
+        raw_key = "sk-PLAINTEXTKEY"
+        km = _llm_make_key_manager(encrypt_return="v1:CIPHER_NOT_PLAINTEXT")
+        db = _llm_make_db(row=None)
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["provider"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _llm_make_client(db=db, key_manager=km).post(
+            "/api/v1/llm-providers/",
+            json={"name": "T", "provider_type": "openai", "api_key": raw_key, "model_sql": "gpt-4o"},
+        )
+        if captured.get("provider"):
+            stored = captured["provider"].encrypted_api_key
+            # The stored value must be the encrypted form, not the raw key
+            assert stored != raw_key
+            assert stored == "v1:CIPHER_NOT_PLAINTEXT"
+
+
+# Import needed for SSRF patching in the Ollama test
+from unittest.mock import patch
+from app.security.ssrf_guard import SSRFError as GuardSSRFError

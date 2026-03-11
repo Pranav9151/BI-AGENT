@@ -17,7 +17,7 @@ from app.api.v1.routes_users import router as users_router
 from app.api.v1.routes_connections import router as connections_router
 # from app.api.v1.routes_query import router as query_router
 from app.api.v1.routes_schema import router as schema_router
-# from app.api.v1.routes_llm_providers import router as llm_router
+from app.api.v1.routes_llm_providers import router as llm_router
 # from app.api.v1.routes_saved_queries import router as saved_queries_router
 # from app.api.v1.routes_conversations import router as conversations_router
 # from app.api.v1.routes_schedules import router as schedules_router
@@ -31,7 +31,7 @@ router.include_router(users_router,         prefix="/users",          tags=["use
 router.include_router(connections_router,   prefix="/connections",    tags=["connections"])
 # router.include_router(query_router,         prefix="/query",          tags=["query"])
 router.include_router(schema_router,        prefix="/schema",         tags=["schema"])
-# router.include_router(llm_router,           prefix="/llm-providers",  tags=["llm-providers"])
+router.include_router(llm_router,           prefix="/llm-providers",  tags=["llm-providers"])
 # router.include_router(saved_queries_router, prefix="/saved-queries",  tags=["saved-queries"])
 # router.include_router(conversations_router, prefix="/conversations",  tags=["conversations"])
 # router.include_router(schedules_router,     prefix="/schedules",      tags=["schedules"])

@@ -93,6 +93,46 @@ def create_access_token(
     )
 
 
+def create_pre_totp_token(user_id: str, email: str) -> str:
+    """
+    Create a partial-access JWT for admin users who have passed password
+    verification but have not yet completed TOTP verification.
+
+    This token is INTENTIONALLY limited:
+        - type = "pre_totp" — rejected by verify_token(..., expected_type="access")
+        - TTL: 5 minutes — short window to complete MFA
+        - Accepted ONLY by get_pre_totp_user() dependency
+        - Valid ONLY on: /auth/totp/verify, /auth/totp/setup, /auth/totp/confirm
+
+    Args:
+        user_id: UUID string of the admin user.
+        email: Admin's email.
+
+    Returns:
+        Signed JWT string (RS256).
+    """
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+
+    payload = {
+        "sub": user_id,
+        "email": email,
+        "role": "admin",  # pre_totp is issued exclusively to admins
+        "type": "pre_totp",
+        "jti": str(uuid.uuid4()),
+        "iat": now,
+        "exp": now + timedelta(minutes=5),  # Short TTL — complete MFA quickly
+        "iss": settings.JWT_ISSUER,
+        "aud": settings.JWT_AUDIENCE,
+    }
+
+    return jwt.encode(
+        payload,
+        settings.jwt_private_key,
+        algorithm="RS256",  # Hardcoded — never dynamic (T4)
+    )
+
+
 def create_refresh_token(user_id: str) -> str:
     """
     Create a JWT refresh token (long-lived, 7 days).

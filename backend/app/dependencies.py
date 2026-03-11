@@ -236,6 +236,103 @@ async def _refresh_admin_session(user_id: str, redis_security) -> None:
 # Authorization dependencies (compose on top of get_current_user)
 # =============================================================================
 
+def get_pre_totp_redis():
+    """
+    Dedicated Redis DB1 dependency for pre-TOTP endpoints only.
+
+    Isolated from the shared get_redis_security() so tests can override
+    this specific function via app.dependency_overrides without interfering
+    with other endpoints. Returns None on RuntimeError so get_pre_totp_user
+    can raise a clean 401 rather than an unhandled 500.
+    """
+    try:
+        from app.db.redis_manager import get_redis_security as _get
+        return _get()
+    except RuntimeError:
+        return None
+    except Exception:
+        return None
+
+
+async def get_pre_totp_user(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
+    redis_security=Depends(get_pre_totp_redis),
+) -> CurrentUser:
+    """
+    Verify a pre_totp JWT and return the partial admin user dict.
+
+    Used EXCLUSIVELY on:
+        POST /auth/totp/verify   — complete MFA verification
+        POST /auth/totp/setup    — initiate TOTP setup
+        POST /auth/totp/confirm  — confirm TOTP activation
+
+    A pre_totp token is issued by /auth/login after successful password
+    verification for admin accounts. It is rejected by get_current_user()
+    because expected_type="access" != "pre_totp".
+
+    Security:
+        - Same blacklist check as get_current_user() (T11)
+        - Redis DB1 unavailability → 503, fail-closed (T12)
+        - Role claim validated — must be "admin"
+
+    Raises:
+        AuthenticationError (401) on any failure.
+    """
+    if credentials is None:
+        raise AuthenticationError(
+            message="Authentication required.",
+            detail="Missing Authorization: Bearer header on pre_totp endpoint",
+        )
+
+    token = credentials.credentials
+
+    if redis_security is None:
+        log.error("auth.pre_totp.redis_unavailable", path=request.url.path)
+        raise AuthenticationError(
+            message="Authentication service temporarily unavailable.",
+            detail="Redis DB1 not initialized during pre_totp check",
+        )
+
+    try:
+        payload = await verify_token(
+            token=token,
+            expected_type="pre_totp",
+            redis_security=redis_security,
+        )
+    except TokenExpiredError:
+        raise TokenExpiredError(
+            message="Your MFA session has expired. Please log in again."
+        )
+    except TokenBlacklistedError:
+        raise TokenBlacklistedError(
+            message="This session has been revoked. Please log in again."
+        )
+    except Exception as exc:
+        log.info("auth.pre_totp.token_invalid", error=str(exc), path=request.url.path)
+        raise TokenInvalidError(message="Invalid authentication token.")
+
+    # Extra guard: pre_totp tokens are only issued to admins
+    if payload.get("role") != "admin":
+        log.warning(
+            "auth.pre_totp.non_admin_claim",
+            role=payload.get("role"),
+            user_id=payload.get("sub"),
+        )
+        raise AdminRequiredError()
+
+    user: CurrentUser = {
+        "user_id": payload["sub"],
+        "email": payload.get("email", ""),
+        "role": "admin",
+        "department": "",
+        "jti": payload.get("jti", ""),
+    }
+
+    bind_user_context(user_id=user["user_id"], role="admin")
+    return user
+
+
 async def require_admin(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> CurrentUser:

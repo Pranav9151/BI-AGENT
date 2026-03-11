@@ -1,5 +1,5 @@
 """
-Smart BI Agent — Component 7 Tests
+Smart BI Agent — Auth Route Tests  (Component 7)
 Auth routes: /login, /totp/verify, /refresh, /logout, /me, /totp/setup, /totp/confirm
 
 Tests use:

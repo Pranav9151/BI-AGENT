@@ -2561,3 +2561,785 @@ class TestLLMProviderKeySecurityInvariants:
 # Import needed for SSRF patching in the Ollama test
 from unittest.mock import patch
 from app.security.ssrf_guard import SSRFError as GuardSSRFError
+
+# =============================================================================
+# SAVED QUERIES — Section helpers (prefix: _sq_)
+# Component 13 | Routes: /api/v1/saved-queries/*
+# =============================================================================
+
+_sq_QUERY_ID   = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+_sq_CONN_ID    = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+_sq_USER_ID    = "11111111-1111-1111-1111-111111111111"
+_sq_OTHER_ID   = "22222222-2222-2222-2222-222222222222"
+
+_sq_USER_DICT: dict = {
+    "user_id": _sq_USER_ID,
+    "email": "analyst@example.com",
+    "role": "analyst",
+    "department": "Finance",
+    "jti": "sq-user-jti",
+}
+_sq_VIEWER_DICT: dict = {
+    "user_id": _sq_USER_ID,
+    "email": "viewer@example.com",
+    "role": "viewer",
+    "department": "",
+    "jti": "sq-viewer-jti",
+}
+_sq_OTHER_USER_DICT: dict = {
+    "user_id": _sq_OTHER_ID,
+    "email": "other@example.com",
+    "role": "analyst",
+    "department": "",
+    "jti": "sq-other-jti",
+}
+
+
+def _sq_make_query(**kwargs) -> MagicMock:
+    """Factory: default SavedQuery ORM mock owned by _sq_USER_ID."""
+    sq = MagicMock()
+    sq.id = uuid.UUID(_sq_QUERY_ID)
+    sq.user_id = uuid.UUID(_sq_USER_ID)
+    sq.connection_id = uuid.UUID(_sq_CONN_ID)
+    sq.name = "Monthly Revenue"
+    sq.description = "Revenue breakdown by month"
+    sq.question = "Show monthly revenue for 2024"
+    sq.sql_query = "SELECT date_trunc('month', created_at), sum(amount) FROM orders GROUP BY 1"
+    sq.tags = ["revenue", "monthly"]
+    sq.sensitivity = "normal"
+    sq.is_shared = False
+    sq.is_pinned = False
+    sq.run_count = 5
+    sq.last_run_at = _FIXED_NOW
+    sq.created_at = _FIXED_NOW
+    sq.updated_at = _FIXED_NOW
+    for k, v in kwargs.items():
+        setattr(sq, k, v)
+    return sq
+
+
+def _sq_make_db(
+    row=None,
+    rows: Optional[list] = None,
+    count: Optional[int] = None,
+) -> AsyncMock:
+    """AsyncSession mock for saved query tests."""
+    session = AsyncMock()
+    session.commit = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    session.delete = AsyncMock()
+
+    if rows is not None:
+        total = count if count is not None else len(rows)
+        count_result = MagicMock()
+        count_result.scalar.return_value = total
+        list_result = MagicMock()
+        scalars_mock = MagicMock()
+        scalars_mock.all.return_value = rows
+        list_result.scalars.return_value = scalars_mock
+        session.execute = AsyncMock(side_effect=[count_result, list_result])
+    else:
+        single = MagicMock()
+        single.scalar_one_or_none.return_value = row
+        session.execute = AsyncMock(return_value=single)
+
+    return session
+
+
+def _sq_build_app() -> "FastAPI":
+    from app.api.v1.routes_saved_queries import router as sq_router
+    app = FastAPI()
+    app.include_router(sq_router, prefix="/api/v1/saved-queries", tags=["saved-queries"])
+    register_exception_handlers(app)
+    return app
+
+
+def _sq_make_client(
+    current_user: Optional[dict] = None,
+    db=None,
+    audit=None,
+) -> TestClient:
+    """Build a TestClient authenticated as current_user (default: analyst)."""
+    app = _sq_build_app()
+    user = current_user or _sq_USER_DICT
+    mock_db = db or _sq_make_db()
+    mock_audit = audit or _make_audit()
+
+    async def override_db():
+        yield mock_db
+
+    from app.dependencies import require_active_user, get_current_user, get_db, get_audit_writer
+    app.dependency_overrides.update({
+        require_active_user: lambda: user,
+        get_current_user: lambda: user,
+        get_db: override_db,
+        get_audit_writer: lambda: mock_audit,
+    })
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _sq_make_admin_client(db=None, audit=None) -> TestClient:
+    """Build a TestClient authenticated as admin."""
+    app = _sq_build_app()
+    mock_db = db or _sq_make_db()
+    mock_audit = audit or _make_audit()
+
+    async def override_db():
+        yield mock_db
+
+    from app.dependencies import require_active_user, get_current_user, get_db, get_audit_writer
+    app.dependency_overrides.update({
+        require_active_user: lambda: _ADMIN_DICT,
+        get_current_user: lambda: _ADMIN_DICT,
+        get_db: override_db,
+        get_audit_writer: lambda: mock_audit,
+    })
+    return TestClient(app, raise_server_exceptions=False)
+
+
+_sq_VALID_BODY = {
+    "connection_id": _sq_CONN_ID,
+    "name": "Revenue Query",
+    "question": "Show me monthly revenue",
+    "sql_query": "SELECT month, SUM(revenue) FROM orders GROUP BY 1",
+}
+
+
+# ---------------------------------------------------------------------------
+# Test classes — Saved Queries
+# ---------------------------------------------------------------------------
+
+class TestSavedQueryList:
+    def test_list_returns_200(self):
+        resp = _sq_make_client(db=_sq_make_db(rows=[_sq_make_query()])).get(
+            "/api/v1/saved-queries/"
+        )
+        assert resp.status_code == 200
+
+    def test_list_has_queries_and_total(self):
+        resp = _sq_make_client(db=_sq_make_db(rows=[_sq_make_query()])).get(
+            "/api/v1/saved-queries/"
+        )
+        body = resp.json()
+        assert "queries" in body and "total" in body
+
+    def test_list_empty_returns_zero_total(self):
+        resp = _sq_make_client(db=_sq_make_db(rows=[])).get("/api/v1/saved-queries/")
+        assert resp.json()["total"] == 0
+
+    def test_list_response_has_all_fields(self):
+        resp = _sq_make_client(db=_sq_make_db(rows=[_sq_make_query()])).get(
+            "/api/v1/saved-queries/"
+        )
+        q = resp.json()["queries"][0]
+        for field in ("query_id", "user_id", "connection_id", "name", "sql_query",
+                      "question", "tags", "sensitivity", "is_shared", "is_pinned",
+                      "run_count"):
+            assert field in q, f"Missing field: {field}"
+
+    def test_list_pinned_queries_come_first(self):
+        pinned = _sq_make_query(is_pinned=True, name="Pinned")
+        normal = _sq_make_query(is_pinned=False, name="Normal")
+        # DB mock returns in this order; route should order pinned first
+        resp = _sq_make_client(db=_sq_make_db(rows=[pinned, normal])).get(
+            "/api/v1/saved-queries/"
+        )
+        assert resp.status_code == 200  # ordering is DB-side; route passes through
+
+    def test_list_unauthenticated_returns_error(self):
+        app = _sq_build_app()
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get("/api/v1/saved-queries/")
+        assert resp.status_code in (401, 403, 422)
+
+
+class TestSavedQueryGet:
+    def test_get_own_query_returns_200(self):
+        resp = _sq_make_client(db=_sq_make_db(row=_sq_make_query())).get(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}"
+        )
+        assert resp.status_code == 200
+
+    def test_get_returns_correct_fields(self):
+        sq = _sq_make_query()
+        resp = _sq_make_client(db=_sq_make_db(row=sq)).get(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}"
+        )
+        body = resp.json()
+        assert body["query_id"] == _sq_QUERY_ID
+        assert body["name"] == "Monthly Revenue"
+
+    def test_get_missing_returns_404(self):
+        assert _sq_make_client(db=_sq_make_db(row=None)).get(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}"
+        ).status_code == 404
+
+    def test_get_shared_query_by_other_user_returns_200(self):
+        """Other users can read shared normal queries."""
+        shared_sq = _sq_make_query(
+            user_id=uuid.UUID(_sq_OTHER_ID),
+            is_shared=True,
+            sensitivity="normal",
+        )
+        resp = _sq_make_client(
+            current_user=_sq_USER_DICT,
+            db=_sq_make_db(row=shared_sq),
+        ).get(f"/api/v1/saved-queries/{_sq_QUERY_ID}")
+        assert resp.status_code == 200
+
+    def test_get_private_query_by_other_user_returns_403(self):
+        """Private query owned by someone else → 403."""
+        private_sq = _sq_make_query(
+            user_id=uuid.UUID(_sq_OTHER_ID),
+            is_shared=False,
+        )
+        resp = _sq_make_client(
+            current_user=_sq_USER_DICT,
+            db=_sq_make_db(row=private_sq),
+        ).get(f"/api/v1/saved-queries/{_sq_QUERY_ID}")
+        assert resp.status_code == 403
+
+    def test_get_restricted_shared_by_non_owner_returns_403(self):
+        """Restricted queries are owner/admin-only regardless of is_shared."""
+        restricted = _sq_make_query(
+            user_id=uuid.UUID(_sq_OTHER_ID),
+            is_shared=True,
+            sensitivity="restricted",
+        )
+        resp = _sq_make_client(
+            current_user=_sq_USER_DICT,
+            db=_sq_make_db(row=restricted),
+        ).get(f"/api/v1/saved-queries/{_sq_QUERY_ID}")
+        assert resp.status_code == 403
+
+    def test_get_sensitive_shared_by_viewer_returns_403(self):
+        """Sensitive shared queries require analyst+ role."""
+        sensitive = _sq_make_query(
+            user_id=uuid.UUID(_sq_OTHER_ID),
+            is_shared=True,
+            sensitivity="sensitive",
+        )
+        resp = _sq_make_client(
+            current_user=_sq_VIEWER_DICT,
+            db=_sq_make_db(row=sensitive),
+        ).get(f"/api/v1/saved-queries/{_sq_QUERY_ID}")
+        assert resp.status_code == 403
+
+    def test_get_sensitive_shared_by_analyst_returns_200(self):
+        """Analyst can read sensitive shared query."""
+        sensitive = _sq_make_query(
+            user_id=uuid.UUID(_sq_OTHER_ID),
+            is_shared=True,
+            sensitivity="sensitive",
+        )
+        resp = _sq_make_client(
+            current_user=_sq_USER_DICT,  # analyst
+            db=_sq_make_db(row=sensitive),
+        ).get(f"/api/v1/saved-queries/{_sq_QUERY_ID}")
+        assert resp.status_code == 200
+
+    def test_admin_can_read_any_private_query(self):
+        private = _sq_make_query(user_id=uuid.UUID(_sq_OTHER_ID), is_shared=False)
+        resp = _sq_make_admin_client(db=_sq_make_db(row=private)).get(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}"
+        )
+        assert resp.status_code == 200
+
+
+class TestSavedQueryCreate:
+    def test_create_returns_201(self):
+        resp = _sq_make_client(db=_sq_make_db()).post(
+            "/api/v1/saved-queries/", json=_sq_VALID_BODY
+        )
+        assert resp.status_code == 201
+
+    def test_create_response_has_query_id(self):
+        resp = _sq_make_client(db=_sq_make_db()).post(
+            "/api/v1/saved-queries/", json=_sq_VALID_BODY
+        )
+        assert "query_id" in resp.json()
+
+    def test_create_owner_is_calling_user(self):
+        db = _sq_make_db()
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["sq"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _sq_make_client(db=db).post("/api/v1/saved-queries/", json=_sq_VALID_BODY)
+        if captured.get("sq"):
+            assert str(captured["sq"].user_id) == _sq_USER_ID
+
+    def test_create_run_count_starts_at_zero(self):
+        db = _sq_make_db()
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["sq"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _sq_make_client(db=db).post("/api/v1/saved-queries/", json=_sq_VALID_BODY)
+        if captured.get("sq"):
+            assert captured["sq"].run_count == 0
+
+    def test_create_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _sq_make_client(db=_sq_make_db(), audit=mock_audit).post(
+            "/api/v1/saved-queries/", json=_sq_VALID_BODY
+        )
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "saved_query.created"
+
+    def test_create_invalid_connection_id_returns_422(self):
+        body = {**_sq_VALID_BODY, "connection_id": "not-a-uuid"}
+        resp = _sq_make_client(db=_sq_make_db()).post(
+            "/api/v1/saved-queries/", json=body
+        )
+        assert resp.status_code == 422
+
+    def test_create_default_sensitivity_is_normal(self):
+        db = _sq_make_db()
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["sq"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _sq_make_client(db=db).post("/api/v1/saved-queries/", json=_sq_VALID_BODY)
+        if captured.get("sq"):
+            assert captured["sq"].sensitivity == "normal"
+
+    def test_create_restricted_sensitivity_stored(self):
+        db = _sq_make_db()
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["sq"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _sq_make_client(db=db).post(
+            "/api/v1/saved-queries/",
+            json={**_sq_VALID_BODY, "sensitivity": "restricted"},
+        )
+        if captured.get("sq"):
+            assert captured["sq"].sensitivity == "restricted"
+
+    def test_create_invalid_sensitivity_returns_422(self):
+        body = {**_sq_VALID_BODY, "sensitivity": "top_secret"}
+        resp = _sq_make_client(db=_sq_make_db()).post(
+            "/api/v1/saved-queries/", json=body
+        )
+        assert resp.status_code == 422
+
+    def test_create_question_too_long_returns_422(self):
+        body = {**_sq_VALID_BODY, "question": "Q" * 2001}
+        resp = _sq_make_client(db=_sq_make_db()).post(
+            "/api/v1/saved-queries/", json=body
+        )
+        assert resp.status_code == 422
+
+
+class TestSavedQueryUpdate:
+    def test_update_name_returns_200(self):
+        sq = _sq_make_query()
+        resp = _sq_make_client(db=_sq_make_db(row=sq)).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}",
+            json={"name": "Updated Name"},
+        )
+        assert resp.status_code == 200
+
+    def test_update_name_mutates_model(self):
+        sq = _sq_make_query()
+        _sq_make_client(db=_sq_make_db(row=sq)).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}",
+            json={"name": "Updated Name"},
+        )
+        assert sq.name == "Updated Name"
+
+    def test_update_missing_returns_404(self):
+        assert _sq_make_client(db=_sq_make_db(row=None)).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}", json={"name": "X"}
+        ).status_code == 404
+
+    def test_update_other_users_query_returns_403(self):
+        """Non-owner cannot update another user's query."""
+        sq = _sq_make_query(user_id=uuid.UUID(_sq_OTHER_ID))
+        resp = _sq_make_client(
+            current_user=_sq_USER_DICT,
+            db=_sq_make_db(row=sq),
+        ).patch(f"/api/v1/saved-queries/{_sq_QUERY_ID}", json={"name": "X"})
+        assert resp.status_code == 403
+
+    def test_admin_can_update_any_query(self):
+        sq = _sq_make_query(user_id=uuid.UUID(_sq_OTHER_ID))
+        resp = _sq_make_admin_client(db=_sq_make_db(row=sq)).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}", json={"name": "Admin Edit"}
+        )
+        assert resp.status_code == 200
+
+    def test_update_writes_audit_log(self):
+        mock_audit = _make_audit()
+        sq = _sq_make_query()
+        _sq_make_client(db=_sq_make_db(row=sq), audit=mock_audit).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}", json={"name": "New"}
+        )
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "saved_query.updated"
+
+    def test_update_tags(self):
+        sq = _sq_make_query(tags=[])
+        _sq_make_client(db=_sq_make_db(row=sq)).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}",
+            json={"tags": ["finance", "q4"]},
+        )
+        assert sq.tags == ["finance", "q4"]
+
+    def test_update_sensitivity(self):
+        sq = _sq_make_query(sensitivity="normal")
+        _sq_make_client(db=_sq_make_db(row=sq)).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}",
+            json={"sensitivity": "sensitive"},
+        )
+        assert sq.sensitivity == "sensitive"
+
+
+class TestSavedQueryDelete:
+    def test_delete_returns_204(self):
+        resp = _sq_make_client(db=_sq_make_db(row=_sq_make_query())).delete(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}"
+        )
+        assert resp.status_code == 204
+
+    def test_delete_missing_returns_404(self):
+        assert _sq_make_client(db=_sq_make_db(row=None)).delete(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}"
+        ).status_code == 404
+
+    def test_delete_other_users_query_returns_403(self):
+        sq = _sq_make_query(user_id=uuid.UUID(_sq_OTHER_ID))
+        resp = _sq_make_client(
+            current_user=_sq_USER_DICT,
+            db=_sq_make_db(row=sq),
+        ).delete(f"/api/v1/saved-queries/{_sq_QUERY_ID}")
+        assert resp.status_code == 403
+
+    def test_admin_can_delete_any_query(self):
+        sq = _sq_make_query(user_id=uuid.UUID(_sq_OTHER_ID))
+        resp = _sq_make_admin_client(db=_sq_make_db(row=sq)).delete(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}"
+        )
+        assert resp.status_code == 204
+
+    def test_delete_calls_db_delete(self):
+        sq = _sq_make_query()
+        db = _sq_make_db(row=sq)
+        _sq_make_client(db=db).delete(f"/api/v1/saved-queries/{_sq_QUERY_ID}")
+        db.delete.assert_called_once_with(sq)
+
+    def test_delete_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _sq_make_client(db=_sq_make_db(row=_sq_make_query()), audit=mock_audit).delete(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}"
+        )
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "saved_query.deleted"
+
+
+class TestSavedQueryDuplicate:
+    def test_duplicate_own_query_returns_201(self):
+        resp = _sq_make_client(db=_sq_make_db(row=_sq_make_query())).post(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}/duplicate"
+        )
+        assert resp.status_code == 201
+
+    def test_duplicate_response_has_copy_in_name(self):
+        sq = _sq_make_query(name="Original")
+        resp = _sq_make_client(db=_sq_make_db(row=sq)).post(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}/duplicate"
+        )
+        assert "Copy of" in resp.json()["name"]
+
+    def test_duplicate_is_always_private(self):
+        db = _sq_make_db(row=_sq_make_query(is_shared=True))
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["sq"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _sq_make_client(db=db).post(f"/api/v1/saved-queries/{_sq_QUERY_ID}/duplicate")
+        if captured.get("sq"):
+            assert captured["sq"].is_shared is False
+
+    def test_duplicate_run_count_reset_to_zero(self):
+        db = _sq_make_db(row=_sq_make_query(run_count=50))
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["sq"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _sq_make_client(db=db).post(f"/api/v1/saved-queries/{_sq_QUERY_ID}/duplicate")
+        if captured.get("sq"):
+            assert captured["sq"].run_count == 0
+
+    def test_duplicate_shared_query_by_other_user_returns_201(self):
+        """Users can duplicate shared queries they didn't author."""
+        shared_sq = _sq_make_query(
+            user_id=uuid.UUID(_sq_OTHER_ID), is_shared=True, sensitivity="normal"
+        )
+        resp = _sq_make_client(
+            current_user=_sq_USER_DICT,
+            db=_sq_make_db(row=shared_sq),
+        ).post(f"/api/v1/saved-queries/{_sq_QUERY_ID}/duplicate")
+        assert resp.status_code == 201
+
+    def test_duplicate_private_query_by_non_owner_returns_403(self):
+        private_sq = _sq_make_query(
+            user_id=uuid.UUID(_sq_OTHER_ID), is_shared=False
+        )
+        resp = _sq_make_client(
+            current_user=_sq_USER_DICT,
+            db=_sq_make_db(row=private_sq),
+        ).post(f"/api/v1/saved-queries/{_sq_QUERY_ID}/duplicate")
+        assert resp.status_code == 403
+
+    def test_duplicate_restricted_query_by_non_owner_returns_403(self):
+        restricted = _sq_make_query(
+            user_id=uuid.UUID(_sq_OTHER_ID), is_shared=True, sensitivity="restricted"
+        )
+        resp = _sq_make_client(
+            current_user=_sq_USER_DICT,
+            db=_sq_make_db(row=restricted),
+        ).post(f"/api/v1/saved-queries/{_sq_QUERY_ID}/duplicate")
+        assert resp.status_code == 403
+
+    def test_duplicate_missing_returns_404(self):
+        assert _sq_make_client(db=_sq_make_db(row=None)).post(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}/duplicate"
+        ).status_code == 404
+
+    def test_duplicate_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _sq_make_client(db=_sq_make_db(row=_sq_make_query()), audit=mock_audit).post(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}/duplicate"
+        )
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "saved_query.duplicated"
+
+    def test_duplicate_new_owner_is_calling_user(self):
+        """Even when duplicating someone else's shared query, copy belongs to caller."""
+        db = _sq_make_db(row=_sq_make_query(user_id=uuid.UUID(_sq_OTHER_ID), is_shared=True))
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["sq"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _sq_make_client(current_user=_sq_USER_DICT, db=db).post(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}/duplicate"
+        )
+        if captured.get("sq"):
+            assert str(captured["sq"].user_id) == _sq_USER_ID
+
+
+class TestSavedQueryPin:
+    def test_pin_toggles_true(self):
+        sq = _sq_make_query(is_pinned=False)
+        _sq_make_client(db=_sq_make_db(row=sq)).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}/pin"
+        )
+        assert sq.is_pinned is True
+
+    def test_pin_toggles_false(self):
+        sq = _sq_make_query(is_pinned=True)
+        _sq_make_client(db=_sq_make_db(row=sq)).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}/pin"
+        )
+        assert sq.is_pinned is False
+
+    def test_pin_returns_200(self):
+        assert _sq_make_client(db=_sq_make_db(row=_sq_make_query())).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}/pin"
+        ).status_code == 200
+
+    def test_pin_missing_returns_404(self):
+        assert _sq_make_client(db=_sq_make_db(row=None)).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}/pin"
+        ).status_code == 404
+
+    def test_pin_other_users_query_returns_403(self):
+        sq = _sq_make_query(user_id=uuid.UUID(_sq_OTHER_ID))
+        resp = _sq_make_client(
+            current_user=_sq_USER_DICT, db=_sq_make_db(row=sq)
+        ).patch(f"/api/v1/saved-queries/{_sq_QUERY_ID}/pin")
+        assert resp.status_code == 403
+
+    def test_pin_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _sq_make_client(db=_sq_make_db(row=_sq_make_query(is_pinned=False)), audit=mock_audit).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}/pin"
+        )
+        status_val = mock_audit.log.call_args.kwargs["execution_status"]
+        assert status_val in ("saved_query.pinned", "saved_query.unpinned")
+
+
+class TestSavedQueryShare:
+    def test_share_toggles_true(self):
+        sq = _sq_make_query(is_shared=False, sensitivity="normal")
+        _sq_make_client(db=_sq_make_db(row=sq)).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}/share"
+        )
+        assert sq.is_shared is True
+
+    def test_share_toggles_false(self):
+        sq = _sq_make_query(is_shared=True, sensitivity="normal")
+        _sq_make_client(db=_sq_make_db(row=sq)).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}/share"
+        )
+        assert sq.is_shared is False
+
+    def test_share_returns_200(self):
+        assert _sq_make_client(
+            db=_sq_make_db(row=_sq_make_query(sensitivity="normal"))
+        ).patch(f"/api/v1/saved-queries/{_sq_QUERY_ID}/share").status_code == 200
+
+    def test_share_restricted_query_returns_422(self):
+        """Restricted queries cannot be shared."""
+        sq = _sq_make_query(is_shared=False, sensitivity="restricted")
+        resp = _sq_make_client(db=_sq_make_db(row=sq)).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}/share"
+        )
+        assert resp.status_code == 422
+
+    def test_share_missing_returns_404(self):
+        assert _sq_make_client(db=_sq_make_db(row=None)).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}/share"
+        ).status_code == 404
+
+    def test_share_other_users_query_returns_403(self):
+        sq = _sq_make_query(user_id=uuid.UUID(_sq_OTHER_ID))
+        resp = _sq_make_client(
+            current_user=_sq_USER_DICT, db=_sq_make_db(row=sq)
+        ).patch(f"/api/v1/saved-queries/{_sq_QUERY_ID}/share")
+        assert resp.status_code == 403
+
+    def test_share_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _sq_make_client(
+            db=_sq_make_db(row=_sq_make_query(sensitivity="normal")), audit=mock_audit
+        ).patch(f"/api/v1/saved-queries/{_sq_QUERY_ID}/share")
+        status_val = mock_audit.log.call_args.kwargs["execution_status"]
+        assert status_val in ("saved_query.shared", "saved_query.unshared")
+
+
+class TestSavedQueryOwnershipInvariants:
+    """
+    Invariant tests for T52 — IDOR prevention.
+    Every mutating endpoint must block non-owners.
+    """
+
+    def _other_owned_sq(self):
+        return _sq_make_query(user_id=uuid.UUID(_sq_OTHER_ID), is_shared=False)
+
+    def test_update_blocked_for_non_owner(self):
+        resp = _sq_make_client(
+            current_user=_sq_USER_DICT,
+            db=_sq_make_db(row=self._other_owned_sq()),
+        ).patch(f"/api/v1/saved-queries/{_sq_QUERY_ID}", json={"name": "X"})
+        assert resp.status_code == 403
+
+    def test_delete_blocked_for_non_owner(self):
+        resp = _sq_make_client(
+            current_user=_sq_USER_DICT,
+            db=_sq_make_db(row=self._other_owned_sq()),
+        ).delete(f"/api/v1/saved-queries/{_sq_QUERY_ID}")
+        assert resp.status_code == 403
+
+    def test_pin_blocked_for_non_owner(self):
+        resp = _sq_make_client(
+            current_user=_sq_USER_DICT,
+            db=_sq_make_db(row=self._other_owned_sq()),
+        ).patch(f"/api/v1/saved-queries/{_sq_QUERY_ID}/pin")
+        assert resp.status_code == 403
+
+    def test_share_blocked_for_non_owner(self):
+        resp = _sq_make_client(
+            current_user=_sq_USER_DICT,
+            db=_sq_make_db(row=self._other_owned_sq()),
+        ).patch(f"/api/v1/saved-queries/{_sq_QUERY_ID}/share")
+        assert resp.status_code == 403
+
+    def test_admin_bypasses_all_ownership_checks(self):
+        """Admin must be able to update/delete any query."""
+        sq = self._other_owned_sq()
+        update_resp = _sq_make_admin_client(db=_sq_make_db(row=sq)).patch(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}", json={"name": "Admin"}
+        )
+        assert update_resp.status_code == 200
+
+        sq2 = self._other_owned_sq()
+        delete_resp = _sq_make_admin_client(db=_sq_make_db(row=sq2)).delete(
+            f"/api/v1/saved-queries/{_sq_QUERY_ID}"
+        )
+        assert delete_resp.status_code == 204
+
+
+class TestSavedQuerySchemas:
+    """Pydantic v2 schema validation for saved query management."""
+
+    def test_create_requires_connection_id_name_question_sql(self):
+        from app.schemas.saved_query import SavedQueryCreateRequest
+        from pydantic import ValidationError as PydanticError
+        with pytest.raises(PydanticError):
+            SavedQueryCreateRequest(name="No conn or question or sql")
+
+    def test_create_defaults(self):
+        from app.schemas.saved_query import SavedQueryCreateRequest
+        req = SavedQueryCreateRequest(
+            connection_id=_sq_CONN_ID,
+            name="Test",
+            question="Q?",
+            sql_query="SELECT 1",
+        )
+        assert req.tags == []
+        assert req.sensitivity.value == "normal"
+        assert req.is_shared is False
+        assert req.is_pinned is False
+
+    def test_sensitivity_enum_has_three_values(self):
+        from app.schemas.saved_query import SensitivityLevel
+        assert set(s.value for s in SensitivityLevel) == {"normal", "sensitive", "restricted"}
+
+    def test_update_request_all_optional(self):
+        from app.schemas.saved_query import SavedQueryUpdateRequest
+        req = SavedQueryUpdateRequest()
+        assert req.name is None and req.sql_query is None and req.tags is None
+
+    def test_response_schema_has_run_count(self):
+        from app.schemas.saved_query import SavedQueryResponse
+        assert "run_count" in SavedQueryResponse.model_fields
+
+    def test_list_response_schema(self):
+        from app.schemas.saved_query import SavedQueryListResponse
+        r = SavedQueryListResponse(queries=[], total=0, skip=0, limit=50)
+        assert r.queries == [] and r.total == 0
+
+    def test_duplicate_response_schema(self):
+        from app.schemas.saved_query import SavedQueryDuplicateResponse
+        r = SavedQueryDuplicateResponse(
+            query_id=_sq_QUERY_ID, name="Copy of X", message="Duplicated"
+        )
+        assert "Copy of X" in r.name

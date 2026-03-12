@@ -4684,3 +4684,744 @@ class TestCronValidation:
 # =============================================================================
 
 
+# =============================================================================
+
+_np_PLATFORM_ID = "66666666-0000-0000-0000-000000000001"
+_np_MAPPING_ID  = "66666666-0000-0000-0000-000000000002"
+_np_USER_ID     = "66666666-0000-0000-0000-000000000003"
+_np_OTHER_ID    = "66666666-0000-0000-0000-000000000004"
+
+_np_ADMIN_DICT: dict = {
+    "user_id": _ADMIN_ID,
+    "email": "admin@notif.example.com",
+    "role": "admin",
+    "department": "",
+    "jti": "np-admin-jti",
+    "totp_verified": True,
+}
+_np_NON_ADMIN_DICT: dict = {
+    "user_id": _np_USER_ID,
+    "email": "analyst@notif.example.com",
+    "role": "analyst",
+    "department": "",
+    "jti": "np-user-jti",
+}
+
+_np_VALID_BODY = {
+    "name": "Finance Slack",
+    "platform_type": "slack",
+    "delivery_config": {"bot_token": "xoxb-TESTTOKEN", "signing_secret": "abc123"},
+}
+
+
+def _np_make_platform(**kwargs) -> MagicMock:
+    p = MagicMock()
+    p.id = uuid.UUID(_np_PLATFORM_ID)
+    p.name = "Finance Slack"
+    p.platform_type = "slack"
+    p.encrypted_config = "v1:ENCRYPTEDCONFIG"
+    p.is_active = True
+    p.is_inbound_enabled = False
+    p.is_outbound_enabled = True
+    p.created_by = uuid.UUID(_ADMIN_ID)
+    p.created_at = _FIXED_NOW
+    p.updated_at = _FIXED_NOW
+    for k, v in kwargs.items():
+        setattr(p, k, v)
+    return p
+
+
+def _np_make_mapping(**kwargs) -> MagicMock:
+    m = MagicMock()
+    m.id = uuid.UUID(_np_MAPPING_ID)
+    m.platform_id = uuid.UUID(_np_PLATFORM_ID)
+    m.platform_user_id = "U0123SLACK"
+    m.internal_user_id = uuid.UUID(_np_USER_ID)
+    m.is_verified = False
+    m.verified_at = None
+    m.expires_at = _FIXED_NOW
+    m.created_at = _FIXED_NOW
+    for k, v in kwargs.items():
+        setattr(m, k, v)
+    return m
+
+
+def _np_make_db(
+    row=None,
+    rows: Optional[list] = None,
+    count: Optional[int] = None,
+    second_row=None,
+    second_rows: Optional[list] = None,
+    second_count: Optional[int] = None,
+) -> AsyncMock:
+    session = AsyncMock()
+    session.commit = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    session.delete = AsyncMock()
+
+    def _make_result(r=None, rs=None, cnt=None):
+        if rs is not None:
+            total = cnt if cnt is not None else len(rs)
+            cr = MagicMock(); cr.scalar.return_value = total
+            lr = MagicMock()
+            sc = MagicMock(); sc.all.return_value = rs
+            lr.scalars.return_value = sc
+            return [cr, lr]
+        single = MagicMock()
+        single.scalar_one_or_none.return_value = r
+        single.scalar.return_value = cnt or 0
+        sc = MagicMock(); sc.all.return_value = rs or []
+        single.scalars.return_value = sc
+        return [single]
+
+    first = _make_result(row, rows, count)
+    second = (
+        _make_result(second_row, second_rows, second_count)
+        if (second_rows is not None or second_row is not None or second_count is not None)
+        else []
+    )
+    all_effects = first + second
+    session.execute = AsyncMock(
+        side_effect=all_effects if len(all_effects) > 1 else None,
+        return_value=all_effects[0] if len(all_effects) == 1 else None,
+    )
+    return session
+
+
+def _np_make_key_manager(
+    decrypt_return: str = "xoxb-TESTTOKEN12",
+    encrypt_return: str = "v1:ENCRYPTED",
+) -> MagicMock:
+    km = MagicMock()
+    km.encrypt.return_value = encrypt_return
+    km.decrypt.return_value = decrypt_return
+    return km
+
+
+def _np_build_app() -> "FastAPI":
+    from app.api.v1.routes_notifications import router as np_router
+    app = FastAPI()
+    app.include_router(np_router, prefix="/api/v1/notifications", tags=["notifications"])
+    register_exception_handlers(app)
+    return app
+
+
+def _np_make_admin_client(db=None, audit=None, km=None) -> TestClient:
+    app = _np_build_app()
+    mock_db = db or _np_make_db()
+    mock_audit = audit or _make_audit()
+    mock_km = km or _np_make_key_manager()
+
+    async def override_db():
+        yield mock_db
+
+    from app.dependencies import require_admin, get_current_user, get_db, get_audit_writer, get_key_manager
+    app.dependency_overrides.update({
+        require_admin: lambda: _np_ADMIN_DICT,
+        get_current_user: lambda: _np_ADMIN_DICT,
+        get_db: override_db,
+        get_audit_writer: lambda: mock_audit,
+        get_key_manager: lambda: mock_km,
+    })
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _np_make_non_admin_client(db=None) -> TestClient:
+    """Client that hits admin-only endpoints — should always get 403."""
+    app = _np_build_app()
+    mock_db = db or _np_make_db()
+
+    async def override_db():
+        yield mock_db
+
+    from app.dependencies import require_admin, get_current_user, get_db, get_audit_writer, get_key_manager
+    from app.errors.exceptions import InsufficientPermissionsError
+
+    def _deny():
+        raise InsufficientPermissionsError(
+            message="Admin access required.",
+            detail="Analyst role is not admin",
+        )
+
+    app.dependency_overrides.update({
+        require_admin: _deny,
+        get_current_user: lambda: _np_NON_ADMIN_DICT,
+        get_db: override_db,
+        get_audit_writer: lambda: _make_audit(),
+        get_key_manager: lambda: _np_make_key_manager(),
+    })
+    return TestClient(app, raise_server_exceptions=False)
+
+
+# ---------------------------------------------------------------------------
+# Test classes — Notification Platforms
+# ---------------------------------------------------------------------------
+
+class TestNotificationPlatformList:
+    def test_list_returns_200(self):
+        resp = _np_make_admin_client(
+            db=_np_make_db(rows=[_np_make_platform()])
+        ).get("/api/v1/notifications/")
+        assert resp.status_code == 200
+
+    def test_list_has_platforms_and_total(self):
+        body = _np_make_admin_client(
+            db=_np_make_db(rows=[_np_make_platform()])
+        ).get("/api/v1/notifications/").json()
+        assert "platforms" in body and "total" in body
+
+    def test_list_response_has_all_fields(self):
+        resp = _np_make_admin_client(
+            db=_np_make_db(rows=[_np_make_platform()])
+        ).get("/api/v1/notifications/")
+        p = resp.json()["platforms"][0]
+        for f in ("platform_id", "name", "platform_type", "config_preview",
+                  "is_active", "is_inbound_enabled", "is_outbound_enabled"):
+            assert f in p, f"Missing: {f}"
+
+    def test_list_never_returns_encrypted_config(self):
+        resp = _np_make_admin_client(
+            db=_np_make_db(rows=[_np_make_platform()])
+        ).get("/api/v1/notifications/")
+        raw = resp.text
+        assert "ENCRYPTEDCONFIG" not in raw
+        assert "encrypted_config" not in raw
+
+    def test_list_empty_returns_zero_total(self):
+        assert _np_make_admin_client(
+            db=_np_make_db(rows=[])
+        ).get("/api/v1/notifications/").json()["total"] == 0
+
+    def test_list_non_admin_returns_403(self):
+        assert _np_make_non_admin_client().get(
+            "/api/v1/notifications/"
+        ).status_code == 403
+
+    def test_list_config_preview_has_ellipsis(self):
+        km = _np_make_key_manager(decrypt_return="xoxb-ABCDEFGH")
+        resp = _np_make_admin_client(
+            db=_np_make_db(rows=[_np_make_platform()]), km=km
+        ).get("/api/v1/notifications/")
+        preview = resp.json()["platforms"][0]["config_preview"]
+        assert "..." in preview
+
+
+class TestNotificationPlatformGet:
+    def test_get_returns_200(self):
+        resp = _np_make_admin_client(
+            db=_np_make_db(row=_np_make_platform())
+        ).get(f"/api/v1/notifications/{_np_PLATFORM_ID}")
+        assert resp.status_code == 200
+
+    def test_get_returns_platform_id(self):
+        resp = _np_make_admin_client(
+            db=_np_make_db(row=_np_make_platform())
+        ).get(f"/api/v1/notifications/{_np_PLATFORM_ID}")
+        assert resp.json()["platform_id"] == _np_PLATFORM_ID
+
+    def test_get_missing_returns_404(self):
+        assert _np_make_admin_client(
+            db=_np_make_db(row=None)
+        ).get(f"/api/v1/notifications/{_np_PLATFORM_ID}").status_code == 404
+
+    def test_get_never_returns_encrypted_config(self):
+        resp = _np_make_admin_client(
+            db=_np_make_db(row=_np_make_platform())
+        ).get(f"/api/v1/notifications/{_np_PLATFORM_ID}")
+        assert "encrypted_config" not in resp.text
+        assert "ENCRYPTEDCONFIG" not in resp.text
+
+    def test_get_non_admin_returns_403(self):
+        assert _np_make_non_admin_client().get(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}"
+        ).status_code == 403
+
+
+class TestNotificationPlatformCreate:
+    def test_create_returns_201(self):
+        resp = _np_make_admin_client(db=_np_make_db()).post(
+            "/api/v1/notifications/", json=_np_VALID_BODY
+        )
+        assert resp.status_code == 201
+
+    def test_create_response_has_platform_id(self):
+        resp = _np_make_admin_client(db=_np_make_db()).post(
+            "/api/v1/notifications/", json=_np_VALID_BODY
+        )
+        assert "platform_id" in resp.json()
+
+    def test_create_encrypts_config(self):
+        km = _np_make_key_manager()
+        _np_make_admin_client(db=_np_make_db(), km=km).post(
+            "/api/v1/notifications/", json=_np_VALID_BODY
+        )
+        km.encrypt.assert_called_once()
+        # First arg to encrypt should be the JSON-serialised delivery_config
+        call_args = km.encrypt.call_args
+        assert "xoxb-TESTTOKEN" in call_args[0][0]
+
+    def test_create_config_never_in_response(self):
+        resp = _np_make_admin_client(db=_np_make_db()).post(
+            "/api/v1/notifications/", json=_np_VALID_BODY
+        )
+        assert "xoxb-TESTTOKEN" not in resp.text
+        assert "encrypted_config" not in resp.text
+
+    def test_create_invalid_platform_type_returns_422(self):
+        body = {**_np_VALID_BODY, "platform_type": "discord"}
+        resp = _np_make_admin_client(db=_np_make_db()).post(
+            "/api/v1/notifications/", json=body
+        )
+        assert resp.status_code == 422
+
+    def test_create_all_valid_platform_types_accepted(self):
+        for pt in ("slack", "teams", "whatsapp", "jira", "clickup", "webhook", "email"):
+            resp = _np_make_admin_client(db=_np_make_db()).post(
+                "/api/v1/notifications/",
+                json={**_np_VALID_BODY, "platform_type": pt},
+            )
+            assert resp.status_code == 201, f"Failed for type: {pt}"
+
+    def test_create_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _np_make_admin_client(db=_np_make_db(), audit=mock_audit).post(
+            "/api/v1/notifications/", json=_np_VALID_BODY
+        )
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "notification_platform.created"
+
+    def test_create_non_admin_returns_403(self):
+        assert _np_make_non_admin_client().post(
+            "/api/v1/notifications/", json=_np_VALID_BODY
+        ).status_code == 403
+
+    def test_create_created_by_is_admin_id(self):
+        db = _np_make_db()
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["p"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _np_make_admin_client(db=db).post("/api/v1/notifications/", json=_np_VALID_BODY)
+        if captured.get("p"):
+            assert str(captured["p"].created_by) == _ADMIN_ID
+
+
+class TestNotificationPlatformUpdate:
+    def test_update_name_returns_200(self):
+        p = _np_make_platform()
+        resp = _np_make_admin_client(db=_np_make_db(row=p)).patch(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}", json={"name": "Updated Name"}
+        )
+        assert resp.status_code == 200
+
+    def test_update_name_mutates_model(self):
+        p = _np_make_platform()
+        _np_make_admin_client(db=_np_make_db(row=p)).patch(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}", json={"name": "Updated"}
+        )
+        assert p.name == "Updated"
+
+    def test_update_missing_returns_404(self):
+        assert _np_make_admin_client(db=_np_make_db(row=None)).patch(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}", json={"name": "X"}
+        ).status_code == 404
+
+    def test_update_delivery_config_re_encrypts(self):
+        km = _np_make_key_manager()
+        p = _np_make_platform()
+        _np_make_admin_client(db=_np_make_db(row=p), km=km).patch(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}",
+            json={"delivery_config": {"bot_token": "xoxb-NEW"}},
+        )
+        km.encrypt.assert_called_once()
+
+    def test_update_writes_audit_log(self):
+        mock_audit = _make_audit()
+        p = _np_make_platform()
+        _np_make_admin_client(db=_np_make_db(row=p), audit=mock_audit).patch(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}", json={"name": "New"}
+        )
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "notification_platform.updated"
+
+    def test_update_non_admin_returns_403(self):
+        assert _np_make_non_admin_client().patch(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}", json={"name": "X"}
+        ).status_code == 403
+
+
+class TestNotificationPlatformDeactivate:
+    def test_deactivate_returns_204(self):
+        resp = _np_make_admin_client(
+            db=_np_make_db(row=_np_make_platform())
+        ).delete(f"/api/v1/notifications/{_np_PLATFORM_ID}")
+        assert resp.status_code == 204
+
+    def test_deactivate_sets_is_active_false(self):
+        p = _np_make_platform(is_active=True)
+        _np_make_admin_client(db=_np_make_db(row=p)).delete(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}"
+        )
+        assert p.is_active is False
+
+    def test_deactivate_disables_inbound(self):
+        p = _np_make_platform(is_inbound_enabled=True)
+        _np_make_admin_client(db=_np_make_db(row=p)).delete(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}"
+        )
+        assert p.is_inbound_enabled is False
+
+    def test_deactivate_does_not_hard_delete(self):
+        db = _np_make_db(row=_np_make_platform())
+        _np_make_admin_client(db=db).delete(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}"
+        )
+        db.delete.assert_not_called()
+
+    def test_deactivate_missing_returns_404(self):
+        assert _np_make_admin_client(
+            db=_np_make_db(row=None)
+        ).delete(f"/api/v1/notifications/{_np_PLATFORM_ID}").status_code == 404
+
+    def test_deactivate_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _np_make_admin_client(
+            db=_np_make_db(row=_np_make_platform()), audit=mock_audit
+        ).delete(f"/api/v1/notifications/{_np_PLATFORM_ID}")
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "notification_platform.deactivated"
+
+    def test_deactivate_non_admin_returns_403(self):
+        assert _np_make_non_admin_client().delete(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}"
+        ).status_code == 403
+
+
+class TestNotificationPlatformTest:
+    def test_test_returns_200_for_active(self):
+        resp = _np_make_admin_client(
+            db=_np_make_db(row=_np_make_platform(is_active=True))
+        ).post(f"/api/v1/notifications/{_np_PLATFORM_ID}/test")
+        assert resp.status_code == 200
+
+    def test_test_success_true_when_decrypt_works(self):
+        km = _np_make_key_manager(decrypt_return="xoxb-REALTOKEN")
+        resp = _np_make_admin_client(
+            db=_np_make_db(row=_np_make_platform(is_active=True)), km=km
+        ).post(f"/api/v1/notifications/{_np_PLATFORM_ID}/test")
+        assert resp.json()["success"] is True
+
+    def test_test_inactive_platform_returns_200_with_success_false(self):
+        resp = _np_make_admin_client(
+            db=_np_make_db(row=_np_make_platform(is_active=False))
+        ).post(f"/api/v1/notifications/{_np_PLATFORM_ID}/test")
+        body = resp.json()
+        assert resp.status_code == 200
+        assert body["success"] is False
+
+    def test_test_response_has_all_fields(self):
+        resp = _np_make_admin_client(
+            db=_np_make_db(row=_np_make_platform())
+        ).post(f"/api/v1/notifications/{_np_PLATFORM_ID}/test")
+        body = resp.json()
+        for f in ("platform_id", "name", "platform_type", "success", "message"):
+            assert f in body, f"Missing: {f}"
+
+    def test_test_missing_returns_404(self):
+        assert _np_make_admin_client(
+            db=_np_make_db(row=None)
+        ).post(f"/api/v1/notifications/{_np_PLATFORM_ID}/test").status_code == 404
+
+    def test_test_decrypts_in_memory_only(self):
+        """Decrypt must be called but the raw key must not appear in the response."""
+        km = _np_make_key_manager(decrypt_return="xoxb-SECRET-NEVER-RETURN")
+        resp = _np_make_admin_client(
+            db=_np_make_db(row=_np_make_platform(is_active=True)), km=km
+        ).post(f"/api/v1/notifications/{_np_PLATFORM_ID}/test")
+        km.decrypt.assert_called_once()
+        assert "xoxb-SECRET-NEVER-RETURN" not in resp.text
+
+    def test_test_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _np_make_admin_client(
+            db=_np_make_db(row=_np_make_platform()), audit=mock_audit
+        ).post(f"/api/v1/notifications/{_np_PLATFORM_ID}/test")
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "notification_platform.tested"
+
+    def test_test_non_admin_returns_403(self):
+        assert _np_make_non_admin_client().post(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}/test"
+        ).status_code == 403
+
+
+class TestNotificationPlatformMappings:
+    def _mapping_db(self, platform, mappings, count=None):
+        """Two-execute mock: platform lookup + mapping list."""
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.add = MagicMock()
+        session.delete = AsyncMock()
+
+        platform_result = MagicMock()
+        platform_result.scalar_one_or_none.return_value = platform
+
+        total = count if count is not None else len(mappings)
+        count_result = MagicMock()
+        count_result.scalar.return_value = total
+
+        list_result = MagicMock()
+        sc = MagicMock()
+        sc.all.return_value = mappings
+        list_result.scalars.return_value = sc
+
+        session.execute = AsyncMock(
+            side_effect=[platform_result, count_result, list_result]
+        )
+        return session
+
+    def test_list_mappings_returns_200(self):
+        db = self._mapping_db(_np_make_platform(), [_np_make_mapping()])
+        resp = _np_make_admin_client(db=db).get(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}/mappings"
+        )
+        assert resp.status_code == 200
+
+    def test_list_mappings_has_list_and_total(self):
+        db = self._mapping_db(_np_make_platform(), [_np_make_mapping()])
+        body = _np_make_admin_client(db=db).get(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}/mappings"
+        ).json()
+        assert "mappings" in body and "total" in body
+
+    def test_list_mappings_has_verification_fields(self):
+        db = self._mapping_db(_np_make_platform(), [_np_make_mapping()])
+        m = _np_make_admin_client(db=db).get(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}/mappings"
+        ).json()["mappings"][0]
+        assert "is_verified" in m and "expires_at" in m
+
+    def test_list_mappings_platform_missing_returns_404(self):
+        platform_result = MagicMock()
+        platform_result.scalar_one_or_none.return_value = None
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=platform_result)
+        assert _np_make_admin_client(db=session).get(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}/mappings"
+        ).status_code == 404
+
+    def test_add_mapping_returns_201(self):
+        platform_result = MagicMock()
+        platform_result.scalar_one_or_none.return_value = _np_make_platform()
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=platform_result)
+        session.commit = AsyncMock()
+        session.add = MagicMock()
+
+        resp = _np_make_admin_client(db=session).post(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}/mappings",
+            json={"platform_user_id": "U0123SLACK", "internal_user_id": _np_USER_ID},
+        )
+        assert resp.status_code == 201
+
+    def test_add_mapping_starts_unverified(self):
+        platform_result = MagicMock()
+        platform_result.scalar_one_or_none.return_value = _np_make_platform()
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=platform_result)
+        session.commit = AsyncMock()
+        captured = {}
+        session.add = lambda obj: captured.update({"m": obj})
+
+        _np_make_admin_client(db=session).post(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}/mappings",
+            json={"platform_user_id": "U0123SLACK", "internal_user_id": _np_USER_ID},
+        )
+        if captured.get("m"):
+            assert captured["m"].is_verified is False
+
+    def test_add_mapping_has_expires_at(self):
+        platform_result = MagicMock()
+        platform_result.scalar_one_or_none.return_value = _np_make_platform()
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=platform_result)
+        session.commit = AsyncMock()
+        captured = {}
+        session.add = lambda obj: captured.update({"m": obj})
+
+        _np_make_admin_client(db=session).post(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}/mappings",
+            json={"platform_user_id": "U0123SLACK", "internal_user_id": _np_USER_ID},
+        )
+        if captured.get("m"):
+            assert captured["m"].expires_at is not None
+
+    def test_add_mapping_invalid_user_id_returns_422(self):
+        platform_result = MagicMock()
+        platform_result.scalar_one_or_none.return_value = _np_make_platform()
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=platform_result)
+        resp = _np_make_admin_client(db=session).post(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}/mappings",
+            json={"platform_user_id": "U123", "internal_user_id": "not-a-uuid"},
+        )
+        assert resp.status_code == 422
+
+    def test_add_mapping_writes_audit_log(self):
+        mock_audit = _make_audit()
+        platform_result = MagicMock()
+        platform_result.scalar_one_or_none.return_value = _np_make_platform()
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=platform_result)
+        session.commit = AsyncMock()
+        session.add = MagicMock()
+
+        _np_make_admin_client(db=session, audit=mock_audit).post(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}/mappings",
+            json={"platform_user_id": "U0123", "internal_user_id": _np_USER_ID},
+        )
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "notification_platform.mapping_added"
+
+    def test_remove_mapping_returns_204(self):
+        mapping_result = MagicMock()
+        mapping_result.scalar_one_or_none.return_value = _np_make_mapping()
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=mapping_result)
+        session.commit = AsyncMock()
+        session.delete = AsyncMock()
+
+        resp = _np_make_admin_client(db=session).delete(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}/mappings/{_np_MAPPING_ID}"
+        )
+        assert resp.status_code == 204
+
+    def test_remove_mapping_missing_returns_404(self):
+        mapping_result = MagicMock()
+        mapping_result.scalar_one_or_none.return_value = None
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=mapping_result)
+
+        assert _np_make_admin_client(db=session).delete(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}/mappings/{_np_MAPPING_ID}"
+        ).status_code == 404
+
+    def test_remove_mapping_calls_db_delete(self):
+        m = _np_make_mapping()
+        mapping_result = MagicMock()
+        mapping_result.scalar_one_or_none.return_value = m
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=mapping_result)
+        session.commit = AsyncMock()
+        session.delete = AsyncMock()
+
+        _np_make_admin_client(db=session).delete(
+            f"/api/v1/notifications/{_np_PLATFORM_ID}/mappings/{_np_MAPPING_ID}"
+        )
+        session.delete.assert_called_once_with(m)
+
+
+class TestNotificationCredentialSecurityInvariants:
+    """
+    Invariant tests: encrypted_config must NEVER appear in any response.
+    config_preview must be 8 chars + "..."
+    """
+
+    def test_encrypted_config_absent_from_list_response(self):
+        resp = _np_make_admin_client(
+            db=_np_make_db(rows=[_np_make_platform()])
+        ).get("/api/v1/notifications/")
+        assert "encrypted_config" not in resp.text
+
+    def test_encrypted_config_absent_from_get_response(self):
+        resp = _np_make_admin_client(
+            db=_np_make_db(row=_np_make_platform())
+        ).get(f"/api/v1/notifications/{_np_PLATFORM_ID}")
+        assert "encrypted_config" not in resp.text
+
+    def test_encrypted_config_absent_from_create_response(self):
+        resp = _np_make_admin_client(db=_np_make_db()).post(
+            "/api/v1/notifications/", json=_np_VALID_BODY
+        )
+        assert "encrypted_config" not in resp.text
+
+    def test_config_preview_format(self):
+        km = _np_make_key_manager(decrypt_return="xoxb-1234567890")
+        resp = _np_make_admin_client(
+            db=_np_make_db(row=_np_make_platform()), km=km
+        ).get(f"/api/v1/notifications/{_np_PLATFORM_ID}")
+        preview = resp.json()["config_preview"]
+        assert preview.endswith("...")
+        assert len(preview) == 11  # 8 chars + "..."
+
+    def test_delivery_config_plaintext_absent_from_create_response(self):
+        resp = _np_make_admin_client(db=_np_make_db()).post(
+            "/api/v1/notifications/", json=_np_VALID_BODY
+        )
+        assert "xoxb-TESTTOKEN" not in resp.text
+
+    def test_test_endpoint_plaintext_never_leaked(self):
+        km = _np_make_key_manager(decrypt_return="xoxb-SUPERSECRETTOKEN")
+        resp = _np_make_admin_client(
+            db=_np_make_db(row=_np_make_platform(is_active=True)), km=km
+        ).post(f"/api/v1/notifications/{_np_PLATFORM_ID}/test")
+        assert "xoxb-SUPERSECRETTOKEN" not in resp.text
+
+    def test_all_endpoints_require_admin(self):
+        non_admin = _np_make_non_admin_client()
+        endpoints = [
+            ("GET",    f"/api/v1/notifications/"),
+            ("GET",    f"/api/v1/notifications/{_np_PLATFORM_ID}"),
+            ("POST",   f"/api/v1/notifications/{_np_PLATFORM_ID}/test"),
+            ("GET",    f"/api/v1/notifications/{_np_PLATFORM_ID}/mappings"),
+        ]
+        for method, url in endpoints:
+            resp = non_admin.request(method, url)
+            assert resp.status_code == 403, f"{method} {url} should be 403"
+
+
+class TestNotificationPlatformSchemas:
+    def test_create_requires_name_platform_type_config(self):
+        from app.schemas.notification import NotificationPlatformCreateRequest
+        from pydantic import ValidationError as PydanticError
+        with pytest.raises(PydanticError):
+            NotificationPlatformCreateRequest()
+
+    def test_platform_types_constant(self):
+        from app.schemas.notification import PLATFORM_TYPES
+        assert "slack" in PLATFORM_TYPES
+        assert "webhook" in PLATFORM_TYPES
+        assert "discord" not in PLATFORM_TYPES
+
+    def test_webhook_platform_types_subset(self):
+        from app.schemas.notification import WEBHOOK_PLATFORM_TYPES, PLATFORM_TYPES
+        assert WEBHOOK_PLATFORM_TYPES.issubset(PLATFORM_TYPES)
+
+    def test_mapping_create_requires_both_ids(self):
+        from app.schemas.notification import PlatformMappingCreateRequest
+        from pydantic import ValidationError as PydanticError
+        with pytest.raises(PydanticError):
+            PlatformMappingCreateRequest(platform_user_id="U123")
+
+    def test_update_request_all_optional(self):
+        from app.schemas.notification import NotificationPlatformUpdateRequest
+        req = NotificationPlatformUpdateRequest()
+        assert req.name is None and req.delivery_config is None
+
+    def test_response_schema_has_config_preview(self):
+        from app.schemas.notification import NotificationPlatformResponse
+        assert "config_preview" in NotificationPlatformResponse.model_fields
+        assert "encrypted_config" not in NotificationPlatformResponse.model_fields
+
+    def test_test_response_schema(self):
+        from app.schemas.notification import NotificationPlatformTestResponse
+        r = NotificationPlatformTestResponse(
+            platform_id=_np_PLATFORM_ID, name="X",
+            platform_type="slack", success=True, message="ok"
+        )
+        assert r.success is True
+
+    def test_mapping_response_schema_has_verification_fields(self):
+        from app.schemas.notification import PlatformMappingResponse
+        fields = PlatformMappingResponse.model_fields
+        assert "is_verified" in fields and "expires_at" in fields

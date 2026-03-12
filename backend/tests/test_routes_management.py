@@ -3343,3 +3343,671 @@ class TestSavedQuerySchemas:
             query_id=_sq_QUERY_ID, name="Copy of X", message="Duplicated"
         )
         assert "Copy of X" in r.name
+
+# =============================================================================
+# ███████╗ ██████╗██╗  ██╗███████╗███╗   ███╗ █████╗   (Component 11)
+# =============================================================================
+# =============================================================================
+
+_cv_CONV_ID    = "cccccccc-0000-0000-0000-000000000001"
+_cv_MSG_ID     = "cccccccc-0000-0000-0000-000000000002"
+_cv_CONN_ID    = "cccccccc-0000-0000-0000-000000000003"
+_cv_USER_ID    = "cccccccc-0000-0000-0000-000000000004"
+_cv_OTHER_ID   = "cccccccc-0000-0000-0000-000000000005"
+
+_cv_USER_DICT: dict = {
+    "user_id": _cv_USER_ID,
+    "email": "analyst@bi.example.com",
+    "role": "analyst",
+    "department": "Finance",
+    "jti": "cv-user-jti",
+}
+_cv_OTHER_USER_DICT: dict = {
+    "user_id": _cv_OTHER_ID,
+    "email": "other@bi.example.com",
+    "role": "analyst",
+    "department": "",
+    "jti": "cv-other-jti",
+}
+_cv_ADMIN_DICT: dict = {
+    "user_id": _ADMIN_ID,
+    "email": "admin@bi.example.com",
+    "role": "admin",
+    "department": "",
+    "jti": "cv-admin-jti",
+}
+
+
+def _cv_make_conv(**kwargs) -> MagicMock:
+    """Factory: default Conversation ORM mock owned by _cv_USER_ID."""
+    conv = MagicMock()
+    conv.id = uuid.UUID(_cv_CONV_ID)
+    conv.user_id = uuid.UUID(_cv_USER_ID)
+    conv.connection_id = uuid.UUID(_cv_CONN_ID)
+    conv.title = "Revenue Analysis"
+    conv.message_count = 4
+    conv.created_at = _FIXED_NOW
+    conv.updated_at = _FIXED_NOW
+    for k, v in kwargs.items():
+        setattr(conv, k, v)
+    return conv
+
+
+def _cv_make_msg(**kwargs) -> MagicMock:
+    """Factory: default ConversationMessage ORM mock."""
+    msg = MagicMock()
+    msg.id = uuid.UUID(_cv_MSG_ID)
+    msg.conversation_id = uuid.UUID(_cv_CONV_ID)
+    msg.role = "user"
+    msg.question = "Show me monthly revenue"
+    msg.sql_query = "SELECT date_trunc('month', created_at), SUM(amount) FROM orders GROUP BY 1"
+    msg.result_summary = "12 rows returned"
+    msg.row_count = 12
+    msg.duration_ms = 340
+    msg.chart_config = {"type": "bar", "x": "month", "y": "revenue"}
+    msg.created_at = _FIXED_NOW
+    for k, v in kwargs.items():
+        setattr(msg, k, v)
+    return msg
+
+
+def _cv_make_db(
+    row=None,
+    rows: Optional[list] = None,
+    count: Optional[int] = None,
+    # Support two sequential execute() calls with different results
+    second_row=None,
+    second_rows: Optional[list] = None,
+    second_count: Optional[int] = None,
+) -> AsyncMock:
+    """
+    AsyncSession mock for conversation tests.
+
+    Supports up to two execute() calls (e.g. list conv + list messages).
+    """
+    session = AsyncMock()
+    session.commit = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    session.delete = AsyncMock()
+
+    def _make_result(r=None, rs=None, cnt=None):
+        if rs is not None:
+            total = cnt if cnt is not None else len(rs)
+            count_result = MagicMock()
+            count_result.scalar.return_value = total
+            list_result = MagicMock()
+            scalars_mock = MagicMock()
+            scalars_mock.all.return_value = rs
+            list_result.scalars.return_value = scalars_mock
+            return [count_result, list_result]
+        else:
+            single = MagicMock()
+            single.scalar_one_or_none.return_value = r
+            single.scalar.return_value = cnt or 0
+            scalars_mock = MagicMock()
+            scalars_mock.all.return_value = rs or []
+            single.scalars.return_value = scalars_mock
+            return [single]
+
+    first = _make_result(row, rows, count)
+    second = _make_result(second_row, second_rows, second_count) if (second_rows is not None or second_row is not None or second_count is not None) else []
+    side_effects = first + second
+
+    if len(side_effects) == 1:
+        session.execute = AsyncMock(return_value=side_effects[0])
+    else:
+        session.execute = AsyncMock(side_effect=side_effects)
+
+    return session
+
+
+def _cv_build_app() -> "FastAPI":
+    from app.api.v1.routes_conversations import router as cv_router
+    app = FastAPI()
+    app.include_router(cv_router, prefix="/api/v1/conversations", tags=["conversations"])
+    register_exception_handlers(app)
+    return app
+
+
+def _cv_make_client(
+    current_user: Optional[dict] = None,
+    db=None,
+    audit=None,
+) -> TestClient:
+    app = _cv_build_app()
+    user = current_user or _cv_USER_DICT
+    mock_db = db or _cv_make_db()
+    mock_audit = audit or _make_audit()
+
+    async def override_db():
+        yield mock_db
+
+    from app.dependencies import require_active_user, get_current_user, get_db, get_audit_writer
+    app.dependency_overrides.update({
+        require_active_user: lambda: user,
+        get_current_user: lambda: user,
+        get_db: override_db,
+        get_audit_writer: lambda: mock_audit,
+    })
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _cv_make_admin_client(db=None, audit=None) -> TestClient:
+    return _cv_make_client(current_user=_cv_ADMIN_DICT, db=db, audit=audit)
+
+
+_cv_VALID_BODY = {
+    "connection_id": _cv_CONN_ID,
+    "title": "Q4 Revenue",
+}
+
+
+# ---------------------------------------------------------------------------
+# Test classes — Conversations
+# ---------------------------------------------------------------------------
+
+class TestConversationList:
+    def test_list_returns_200(self):
+        resp = _cv_make_client(
+            db=_cv_make_db(rows=[_cv_make_conv()])
+        ).get("/api/v1/conversations/")
+        assert resp.status_code == 200
+
+    def test_list_has_conversations_and_total(self):
+        body = _cv_make_client(
+            db=_cv_make_db(rows=[_cv_make_conv()])
+        ).get("/api/v1/conversations/").json()
+        assert "conversations" in body and "total" in body
+
+    def test_list_empty_returns_zero_total(self):
+        assert _cv_make_client(
+            db=_cv_make_db(rows=[])
+        ).get("/api/v1/conversations/").json()["total"] == 0
+
+    def test_list_response_has_all_fields(self):
+        resp = _cv_make_client(
+            db=_cv_make_db(rows=[_cv_make_conv()])
+        ).get("/api/v1/conversations/")
+        c = resp.json()["conversations"][0]
+        for f in ("conversation_id", "user_id", "connection_id", "title",
+                  "message_count", "turn_limit_reached"):
+            assert f in c, f"Missing field: {f}"
+
+    def test_list_turn_limit_reached_false_for_normal(self):
+        conv = _cv_make_conv(message_count=4)
+        c = _cv_make_client(
+            db=_cv_make_db(rows=[conv])
+        ).get("/api/v1/conversations/").json()["conversations"][0]
+        assert c["turn_limit_reached"] is False
+
+    def test_list_turn_limit_reached_true_at_20(self):
+        conv = _cv_make_conv(message_count=20)
+        c = _cv_make_client(
+            db=_cv_make_db(rows=[conv])
+        ).get("/api/v1/conversations/").json()["conversations"][0]
+        assert c["turn_limit_reached"] is True
+
+    def test_list_unauthenticated_returns_error(self):
+        app = _cv_build_app()
+        resp = TestClient(app, raise_server_exceptions=False).get(
+            "/api/v1/conversations/"
+        )
+        assert resp.status_code in (401, 403, 422)
+
+    def test_list_pagination_params_passed(self):
+        resp = _cv_make_client(
+            db=_cv_make_db(rows=[])
+        ).get("/api/v1/conversations/?skip=10&limit=5")
+        body = resp.json()
+        assert body["skip"] == 10 and body["limit"] == 5
+
+
+class TestConversationGet:
+    def test_get_own_returns_200(self):
+        resp = _cv_make_client(
+            db=_cv_make_db(row=_cv_make_conv())
+        ).get(f"/api/v1/conversations/{_cv_CONV_ID}")
+        assert resp.status_code == 200
+
+    def test_get_returns_conversation_id(self):
+        resp = _cv_make_client(
+            db=_cv_make_db(row=_cv_make_conv())
+        ).get(f"/api/v1/conversations/{_cv_CONV_ID}")
+        assert resp.json()["conversation_id"] == _cv_CONV_ID
+
+    def test_get_missing_returns_404(self):
+        assert _cv_make_client(
+            db=_cv_make_db(row=None)
+        ).get(f"/api/v1/conversations/{_cv_CONV_ID}").status_code == 404
+
+    def test_get_other_users_conv_returns_403(self):
+        conv = _cv_make_conv(user_id=uuid.UUID(_cv_OTHER_ID))
+        resp = _cv_make_client(
+            current_user=_cv_USER_DICT,
+            db=_cv_make_db(row=conv),
+        ).get(f"/api/v1/conversations/{_cv_CONV_ID}")
+        assert resp.status_code == 403
+
+    def test_admin_can_get_any_conv(self):
+        conv = _cv_make_conv(user_id=uuid.UUID(_cv_OTHER_ID))
+        resp = _cv_make_admin_client(
+            db=_cv_make_db(row=conv)
+        ).get(f"/api/v1/conversations/{_cv_CONV_ID}")
+        assert resp.status_code == 200
+
+    def test_get_title_in_response(self):
+        conv = _cv_make_conv(title="My Revenue Session")
+        resp = _cv_make_client(
+            db=_cv_make_db(row=conv)
+        ).get(f"/api/v1/conversations/{_cv_CONV_ID}")
+        assert resp.json()["title"] == "My Revenue Session"
+
+    def test_get_turn_limit_in_response(self):
+        conv = _cv_make_conv(message_count=20)
+        resp = _cv_make_client(
+            db=_cv_make_db(row=conv)
+        ).get(f"/api/v1/conversations/{_cv_CONV_ID}")
+        assert resp.json()["turn_limit_reached"] is True
+
+
+class TestConversationMessages:
+    def _make_msg_db(self, conv, msgs, msg_count=None):
+        """Two-execute mock: first for conv lookup, second for message list."""
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        session.add = MagicMock()
+        session.delete = AsyncMock()
+
+        # Call 1: single conv lookup
+        conv_result = MagicMock()
+        conv_result.scalar_one_or_none.return_value = conv
+
+        # Call 2: count messages
+        total = msg_count if msg_count is not None else len(msgs)
+        count_result = MagicMock()
+        count_result.scalar.return_value = total
+
+        # Call 3: fetch messages
+        list_result = MagicMock()
+        scalars_mock = MagicMock()
+        scalars_mock.all.return_value = msgs
+        list_result.scalars.return_value = scalars_mock
+
+        session.execute = AsyncMock(side_effect=[conv_result, count_result, list_result])
+        return session
+
+    def test_messages_returns_200(self):
+        db = self._make_msg_db(_cv_make_conv(), [_cv_make_msg()])
+        resp = _cv_make_client(db=db).get(
+            f"/api/v1/conversations/{_cv_CONV_ID}/messages"
+        )
+        assert resp.status_code == 200
+
+    def test_messages_returns_list(self):
+        db = self._make_msg_db(_cv_make_conv(), [_cv_make_msg()])
+        body = _cv_make_client(db=db).get(
+            f"/api/v1/conversations/{_cv_CONV_ID}/messages"
+        ).json()
+        assert "messages" in body and len(body["messages"]) == 1
+
+    def test_messages_has_all_fields(self):
+        db = self._make_msg_db(_cv_make_conv(), [_cv_make_msg()])
+        msg = _cv_make_client(db=db).get(
+            f"/api/v1/conversations/{_cv_CONV_ID}/messages"
+        ).json()["messages"][0]
+        for f in ("message_id", "conversation_id", "role", "question",
+                  "sql_query", "result_summary", "row_count", "created_at"):
+            assert f in msg, f"Missing field: {f}"
+
+    def test_messages_missing_conv_returns_404(self):
+        conv_result = MagicMock()
+        conv_result.scalar_one_or_none.return_value = None
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=conv_result)
+        assert _cv_make_client(db=session).get(
+            f"/api/v1/conversations/{_cv_CONV_ID}/messages"
+        ).status_code == 404
+
+    def test_messages_other_users_conv_returns_403(self):
+        other_conv = _cv_make_conv(user_id=uuid.UUID(_cv_OTHER_ID))
+        db = self._make_msg_db(other_conv, [])
+        resp = _cv_make_client(
+            current_user=_cv_USER_DICT, db=db
+        ).get(f"/api/v1/conversations/{_cv_CONV_ID}/messages")
+        assert resp.status_code == 403
+
+    def test_messages_includes_turn_limit_reached(self):
+        conv = _cv_make_conv(message_count=20)
+        db = self._make_msg_db(conv, [])
+        body = _cv_make_client(db=db).get(
+            f"/api/v1/conversations/{_cv_CONV_ID}/messages"
+        ).json()
+        assert body["turn_limit_reached"] is True
+
+    def test_messages_includes_conversation_id(self):
+        db = self._make_msg_db(_cv_make_conv(), [_cv_make_msg()])
+        body = _cv_make_client(db=db).get(
+            f"/api/v1/conversations/{_cv_CONV_ID}/messages"
+        ).json()
+        assert body["conversation_id"] == _cv_CONV_ID
+
+    def test_messages_chart_config_passed_through(self):
+        chart = {"type": "line", "x": "month", "y": "revenue"}
+        msg = _cv_make_msg(chart_config=chart)
+        db = self._make_msg_db(_cv_make_conv(), [msg])
+        body = _cv_make_client(db=db).get(
+            f"/api/v1/conversations/{_cv_CONV_ID}/messages"
+        ).json()
+        assert body["messages"][0]["chart_config"] == chart
+
+    def test_admin_can_get_messages_of_any_conv(self):
+        other_conv = _cv_make_conv(user_id=uuid.UUID(_cv_OTHER_ID))
+        db = self._make_msg_db(other_conv, [_cv_make_msg()])
+        resp = _cv_make_admin_client(db=db).get(
+            f"/api/v1/conversations/{_cv_CONV_ID}/messages"
+        )
+        assert resp.status_code == 200
+
+
+class TestConversationCreate:
+    def test_create_returns_201(self):
+        resp = _cv_make_client(db=_cv_make_db()).post(
+            "/api/v1/conversations/", json=_cv_VALID_BODY
+        )
+        assert resp.status_code == 201
+
+    def test_create_response_has_conversation_id(self):
+        resp = _cv_make_client(db=_cv_make_db()).post(
+            "/api/v1/conversations/", json=_cv_VALID_BODY
+        )
+        assert "conversation_id" in resp.json()
+
+    def test_create_message_count_starts_zero(self):
+        db = _cv_make_db()
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["conv"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _cv_make_client(db=db).post("/api/v1/conversations/", json=_cv_VALID_BODY)
+        if captured.get("conv"):
+            assert captured["conv"].message_count == 0
+
+    def test_create_owner_is_calling_user(self):
+        db = _cv_make_db()
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["conv"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _cv_make_client(db=db).post("/api/v1/conversations/", json=_cv_VALID_BODY)
+        if captured.get("conv"):
+            assert str(captured["conv"].user_id) == _cv_USER_ID
+
+    def test_create_title_stored(self):
+        db = _cv_make_db()
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["conv"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _cv_make_client(db=db).post(
+            "/api/v1/conversations/", json={**_cv_VALID_BODY, "title": "Budget Review"}
+        )
+        if captured.get("conv"):
+            assert captured["conv"].title == "Budget Review"
+
+    def test_create_without_title_is_valid(self):
+        resp = _cv_make_client(db=_cv_make_db()).post(
+            "/api/v1/conversations/",
+            json={"connection_id": _cv_CONN_ID},
+        )
+        assert resp.status_code == 201
+
+    def test_create_invalid_connection_id_returns_422(self):
+        resp = _cv_make_client(db=_cv_make_db()).post(
+            "/api/v1/conversations/",
+            json={"connection_id": "not-a-uuid"},
+        )
+        assert resp.status_code == 422
+
+    def test_create_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _cv_make_client(db=_cv_make_db(), audit=mock_audit).post(
+            "/api/v1/conversations/", json=_cv_VALID_BODY
+        )
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "conversation.created"
+
+    def test_create_turn_limit_reached_false(self):
+        resp = _cv_make_client(db=_cv_make_db()).post(
+            "/api/v1/conversations/", json=_cv_VALID_BODY
+        )
+        assert resp.json()["turn_limit_reached"] is False
+
+
+class TestConversationUpdate:
+    def test_update_title_returns_200(self):
+        conv = _cv_make_conv()
+        resp = _cv_make_client(db=_cv_make_db(row=conv)).patch(
+            f"/api/v1/conversations/{_cv_CONV_ID}",
+            json={"title": "Renamed Session"},
+        )
+        assert resp.status_code == 200
+
+    def test_update_mutates_title(self):
+        conv = _cv_make_conv(title="Old Title")
+        _cv_make_client(db=_cv_make_db(row=conv)).patch(
+            f"/api/v1/conversations/{_cv_CONV_ID}",
+            json={"title": "New Title"},
+        )
+        assert conv.title == "New Title"
+
+    def test_update_missing_returns_404(self):
+        assert _cv_make_client(db=_cv_make_db(row=None)).patch(
+            f"/api/v1/conversations/{_cv_CONV_ID}", json={"title": "X"}
+        ).status_code == 404
+
+    def test_update_other_users_conv_returns_403(self):
+        conv = _cv_make_conv(user_id=uuid.UUID(_cv_OTHER_ID))
+        resp = _cv_make_client(
+            current_user=_cv_USER_DICT, db=_cv_make_db(row=conv)
+        ).patch(f"/api/v1/conversations/{_cv_CONV_ID}", json={"title": "X"})
+        assert resp.status_code == 403
+
+    def test_admin_can_rename_any_conv(self):
+        conv = _cv_make_conv(user_id=uuid.UUID(_cv_OTHER_ID))
+        resp = _cv_make_admin_client(db=_cv_make_db(row=conv)).patch(
+            f"/api/v1/conversations/{_cv_CONV_ID}", json={"title": "Admin Rename"}
+        )
+        assert resp.status_code == 200
+
+    def test_update_writes_audit_log(self):
+        mock_audit = _make_audit()
+        conv = _cv_make_conv()
+        _cv_make_client(db=_cv_make_db(row=conv), audit=mock_audit).patch(
+            f"/api/v1/conversations/{_cv_CONV_ID}", json={"title": "New"}
+        )
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "conversation.updated"
+
+    def test_update_empty_body_is_valid(self):
+        """Empty PATCH with no fields is a no-op — should still return 200."""
+        conv = _cv_make_conv()
+        resp = _cv_make_client(db=_cv_make_db(row=conv)).patch(
+            f"/api/v1/conversations/{_cv_CONV_ID}", json={}
+        )
+        assert resp.status_code == 200
+
+
+class TestConversationDelete:
+    def test_delete_returns_204(self):
+        resp = _cv_make_client(
+            db=_cv_make_db(row=_cv_make_conv())
+        ).delete(f"/api/v1/conversations/{_cv_CONV_ID}")
+        assert resp.status_code == 204
+
+    def test_delete_missing_returns_404(self):
+        assert _cv_make_client(
+            db=_cv_make_db(row=None)
+        ).delete(f"/api/v1/conversations/{_cv_CONV_ID}").status_code == 404
+
+    def test_delete_other_users_conv_returns_403(self):
+        conv = _cv_make_conv(user_id=uuid.UUID(_cv_OTHER_ID))
+        resp = _cv_make_client(
+            current_user=_cv_USER_DICT, db=_cv_make_db(row=conv)
+        ).delete(f"/api/v1/conversations/{_cv_CONV_ID}")
+        assert resp.status_code == 403
+
+    def test_admin_can_delete_any_conv(self):
+        conv = _cv_make_conv(user_id=uuid.UUID(_cv_OTHER_ID))
+        resp = _cv_make_admin_client(
+            db=_cv_make_db(row=conv)
+        ).delete(f"/api/v1/conversations/{_cv_CONV_ID}")
+        assert resp.status_code == 204
+
+    def test_delete_calls_db_delete(self):
+        conv = _cv_make_conv()
+        db = _cv_make_db(row=conv)
+        _cv_make_client(db=db).delete(f"/api/v1/conversations/{_cv_CONV_ID}")
+        db.delete.assert_called_once_with(conv)
+
+    def test_delete_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _cv_make_client(
+            db=_cv_make_db(row=_cv_make_conv()), audit=mock_audit
+        ).delete(f"/api/v1/conversations/{_cv_CONV_ID}")
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "conversation.deleted"
+
+
+class TestConversationOwnershipInvariants:
+    """
+    Invariant tests for T52 — IDOR prevention on conversations.
+    No sharing model exists — conversations are always private.
+    """
+
+    def _other_conv(self):
+        return _cv_make_conv(user_id=uuid.UUID(_cv_OTHER_ID))
+
+    def test_get_blocked_for_non_owner(self):
+        resp = _cv_make_client(
+            current_user=_cv_USER_DICT, db=_cv_make_db(row=self._other_conv())
+        ).get(f"/api/v1/conversations/{_cv_CONV_ID}")
+        assert resp.status_code == 403
+
+    def test_update_blocked_for_non_owner(self):
+        resp = _cv_make_client(
+            current_user=_cv_USER_DICT, db=_cv_make_db(row=self._other_conv())
+        ).patch(f"/api/v1/conversations/{_cv_CONV_ID}", json={"title": "X"})
+        assert resp.status_code == 403
+
+    def test_delete_blocked_for_non_owner(self):
+        resp = _cv_make_client(
+            current_user=_cv_USER_DICT, db=_cv_make_db(row=self._other_conv())
+        ).delete(f"/api/v1/conversations/{_cv_CONV_ID}")
+        assert resp.status_code == 403
+
+    def test_admin_bypasses_ownership_on_get(self):
+        resp = _cv_make_admin_client(
+            db=_cv_make_db(row=self._other_conv())
+        ).get(f"/api/v1/conversations/{_cv_CONV_ID}")
+        assert resp.status_code == 200
+
+    def test_admin_bypasses_ownership_on_delete(self):
+        resp = _cv_make_admin_client(
+            db=_cv_make_db(row=self._other_conv())
+        ).delete(f"/api/v1/conversations/{_cv_CONV_ID}")
+        assert resp.status_code == 204
+
+
+class TestConversationTurnLimitInvariant:
+    """
+    Invariant tests for T37 — 20-turn conversation limit.
+    The route layer must correctly surface turn_limit_reached.
+    """
+
+    def test_turn_limit_false_at_19(self):
+        conv = _cv_make_conv(message_count=19)
+        c = _cv_make_client(db=_cv_make_db(rows=[conv])).get(
+            "/api/v1/conversations/"
+        ).json()["conversations"][0]
+        assert c["turn_limit_reached"] is False
+
+    def test_turn_limit_true_at_20(self):
+        conv = _cv_make_conv(message_count=20)
+        c = _cv_make_client(db=_cv_make_db(rows=[conv])).get(
+            "/api/v1/conversations/"
+        ).json()["conversations"][0]
+        assert c["turn_limit_reached"] is True
+
+    def test_turn_limit_true_above_20(self):
+        conv = _cv_make_conv(message_count=25)
+        c = _cv_make_client(db=_cv_make_db(rows=[conv])).get(
+            "/api/v1/conversations/"
+        ).json()["conversations"][0]
+        assert c["turn_limit_reached"] is True
+
+    def test_turn_limit_consistent_in_get_and_list(self):
+        """get and list must agree on turn_limit_reached."""
+        conv = _cv_make_conv(message_count=20)
+        get_resp = _cv_make_client(db=_cv_make_db(row=conv)).get(
+            f"/api/v1/conversations/{_cv_CONV_ID}"
+        ).json()
+        list_conv = _cv_make_conv(message_count=20)
+        list_resp = _cv_make_client(db=_cv_make_db(rows=[list_conv])).get(
+            "/api/v1/conversations/"
+        ).json()["conversations"][0]
+        assert get_resp["turn_limit_reached"] == list_resp["turn_limit_reached"] is True
+
+
+class TestConversationSchemas:
+    """Pydantic v2 schema validation for conversation management."""
+
+    def test_create_request_requires_connection_id(self):
+        from app.schemas.conversation import ConversationCreateRequest
+        from pydantic import ValidationError as PydanticError
+        with pytest.raises(PydanticError):
+            ConversationCreateRequest()
+
+    def test_create_request_title_optional(self):
+        from app.schemas.conversation import ConversationCreateRequest
+        req = ConversationCreateRequest(connection_id=_cv_CONN_ID)
+        assert req.title is None
+
+    def test_update_request_all_optional(self):
+        from app.schemas.conversation import ConversationUpdateRequest
+        req = ConversationUpdateRequest()
+        assert req.title is None
+
+    def test_max_turns_constant_is_20(self):
+        from app.schemas.conversation import MAX_TURNS
+        assert MAX_TURNS == 20
+
+    def test_conversation_response_schema(self):
+        from app.schemas.conversation import ConversationResponse
+        fields = ConversationResponse.model_fields
+        assert "turn_limit_reached" in fields
+
+    def test_message_response_schema_has_chart_config(self):
+        from app.schemas.conversation import MessageResponse
+        assert "chart_config" in MessageResponse.model_fields
+
+    def test_list_response_schema(self):
+        from app.schemas.conversation import ConversationListResponse
+        r = ConversationListResponse(conversations=[], total=0, skip=0, limit=50)
+        assert r.total == 0
+
+    def test_message_list_response_has_turn_limit(self):
+        from app.schemas.conversation import ConversationMessageListResponse
+        r = ConversationMessageListResponse(
+            conversation_id=_cv_CONV_ID, messages=[], total=0, turn_limit_reached=False
+        )
+        assert r.turn_limit_reached is False

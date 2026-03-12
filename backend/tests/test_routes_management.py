@@ -4011,3 +4011,676 @@ class TestConversationSchemas:
             conversation_id=_cv_CONV_ID, messages=[], total=0, turn_limit_reached=False
         )
         assert r.turn_limit_reached is False
+
+
+
+# =============================================================================
+# ███████╗ ██████╗██╗  ██╗███████╗███╗   ███╗ █████╗   (Component 15)
+# =============================================================================
+
+
+_sch_SCHED_ID  = "55555555-0000-0000-0000-000000000001"
+_sch_QUERY_ID  = "55555555-0000-0000-0000-000000000002"
+_sch_USER_ID   = "55555555-0000-0000-0000-000000000003"
+_sch_OTHER_ID  = "55555555-0000-0000-0000-000000000004"
+
+_sch_USER_DICT: dict = {
+    "user_id": _sch_USER_ID,
+    "email": "analyst@schedules.example.com",
+    "role": "analyst",
+    "department": "Finance",
+    "jti": "sch-user-jti",
+}
+_sch_ADMIN_DICT: dict = {
+    "user_id": _ADMIN_ID,
+    "email": "admin@schedules.example.com",
+    "role": "admin",
+    "department": "",
+    "jti": "sch-admin-jti",
+}
+
+_sch_VALID_TARGETS = [
+    {"platform_id": "aaaaaaaa-0000-0000-0000-000000000001", "destination": "#finance-reports"}
+]
+_sch_VALID_BODY = {
+    "name": "Weekly Revenue",
+    "saved_query_id": _sch_QUERY_ID,
+    "cron_expression": "0 8 * * 1",
+    "timezone": "Asia/Riyadh",
+    "output_format": "excel",
+    "delivery_targets": _sch_VALID_TARGETS,
+}
+
+
+def _sch_make_schedule(**kwargs) -> MagicMock:
+    """Factory: default Schedule ORM mock owned by _sch_USER_ID."""
+    s = MagicMock()
+    s.id = uuid.UUID(_sch_SCHED_ID)
+    s.user_id = uuid.UUID(_sch_USER_ID)
+    s.saved_query_id = uuid.UUID(_sch_QUERY_ID)
+    s.name = "Weekly Revenue"
+    s.cron_expression = "0 8 * * 1"
+    s.timezone = "Asia/Riyadh"
+    s.output_format = "excel"
+    s.delivery_targets = _sch_VALID_TARGETS
+    s.is_active = True
+    s.last_run_at = None
+    s.last_run_status = None
+    s.next_run_at = None
+    s.created_at = _FIXED_NOW
+    s.updated_at = _FIXED_NOW
+    for k, v in kwargs.items():
+        setattr(s, k, v)
+    return s
+
+
+def _sch_make_db(
+    row=None,
+    rows: Optional[list] = None,
+    count: Optional[int] = None,
+) -> AsyncMock:
+    session = AsyncMock()
+    session.commit = AsyncMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    session.delete = AsyncMock()
+
+    if rows is not None:
+        total = count if count is not None else len(rows)
+        count_result = MagicMock()
+        count_result.scalar.return_value = total
+        list_result = MagicMock()
+        scalars_mock = MagicMock()
+        scalars_mock.all.return_value = rows
+        list_result.scalars.return_value = scalars_mock
+        session.execute = AsyncMock(side_effect=[count_result, list_result])
+    else:
+        single = MagicMock()
+        single.scalar_one_or_none.return_value = row
+        session.execute = AsyncMock(return_value=single)
+
+    return session
+
+
+def _sch_build_app() -> "FastAPI":
+    from app.api.v1.routes_schedules import router as sch_router
+    app = FastAPI()
+    app.include_router(sch_router, prefix="/api/v1/schedules", tags=["schedules"])
+    register_exception_handlers(app)
+    return app
+
+
+def _sch_make_client(
+    current_user: Optional[dict] = None,
+    db=None,
+    audit=None,
+) -> TestClient:
+    app = _sch_build_app()
+    user = current_user or _sch_USER_DICT
+    mock_db = db or _sch_make_db()
+    mock_audit = audit or _make_audit()
+
+    async def override_db():
+        yield mock_db
+
+    from app.dependencies import require_active_user, get_current_user, get_db, get_audit_writer
+    app.dependency_overrides.update({
+        require_active_user: lambda: user,
+        get_current_user: lambda: user,
+        get_db: override_db,
+        get_audit_writer: lambda: mock_audit,
+    })
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _sch_make_admin_client(db=None, audit=None) -> TestClient:
+    return _sch_make_client(current_user=_sch_ADMIN_DICT, db=db, audit=audit)
+
+
+# ---------------------------------------------------------------------------
+# Test classes — Schedules
+# ---------------------------------------------------------------------------
+
+class TestScheduleList:
+    def test_list_returns_200(self):
+        resp = _sch_make_client(
+            db=_sch_make_db(rows=[_sch_make_schedule()])
+        ).get("/api/v1/schedules/")
+        assert resp.status_code == 200
+
+    def test_list_has_schedules_and_total(self):
+        body = _sch_make_client(
+            db=_sch_make_db(rows=[_sch_make_schedule()])
+        ).get("/api/v1/schedules/").json()
+        assert "schedules" in body and "total" in body
+
+    def test_list_empty_returns_zero_total(self):
+        assert _sch_make_client(
+            db=_sch_make_db(rows=[])
+        ).get("/api/v1/schedules/").json()["total"] == 0
+
+    def test_list_response_has_all_fields(self):
+        resp = _sch_make_client(
+            db=_sch_make_db(rows=[_sch_make_schedule()])
+        ).get("/api/v1/schedules/")
+        s = resp.json()["schedules"][0]
+        for f in ("schedule_id", "user_id", "name", "cron_expression",
+                  "timezone", "output_format", "delivery_targets",
+                  "is_active", "last_run_at", "last_run_status", "next_run_at"):
+            assert f in s, f"Missing field: {f}"
+
+    def test_list_unauthenticated_returns_error(self):
+        app = _sch_build_app()
+        resp = TestClient(app, raise_server_exceptions=False).get(
+            "/api/v1/schedules/"
+        )
+        assert resp.status_code in (401, 403, 422)
+
+    def test_list_pagination_params(self):
+        body = _sch_make_client(
+            db=_sch_make_db(rows=[])
+        ).get("/api/v1/schedules/?skip=5&limit=10").json()
+        assert body["skip"] == 5 and body["limit"] == 10
+
+    def test_list_delivery_targets_is_list(self):
+        resp = _sch_make_client(
+            db=_sch_make_db(rows=[_sch_make_schedule()])
+        ).get("/api/v1/schedules/")
+        s = resp.json()["schedules"][0]
+        assert isinstance(s["delivery_targets"], list)
+
+
+class TestScheduleGet:
+    def test_get_own_returns_200(self):
+        resp = _sch_make_client(
+            db=_sch_make_db(row=_sch_make_schedule())
+        ).get(f"/api/v1/schedules/{_sch_SCHED_ID}")
+        assert resp.status_code == 200
+
+    def test_get_returns_schedule_id(self):
+        resp = _sch_make_client(
+            db=_sch_make_db(row=_sch_make_schedule())
+        ).get(f"/api/v1/schedules/{_sch_SCHED_ID}")
+        assert resp.json()["schedule_id"] == _sch_SCHED_ID
+
+    def test_get_missing_returns_404(self):
+        assert _sch_make_client(
+            db=_sch_make_db(row=None)
+        ).get(f"/api/v1/schedules/{_sch_SCHED_ID}").status_code == 404
+
+    def test_get_other_users_schedule_returns_403(self):
+        s = _sch_make_schedule(user_id=uuid.UUID(_sch_OTHER_ID))
+        resp = _sch_make_client(
+            current_user=_sch_USER_DICT, db=_sch_make_db(row=s)
+        ).get(f"/api/v1/schedules/{_sch_SCHED_ID}")
+        assert resp.status_code == 403
+
+    def test_admin_can_get_any_schedule(self):
+        s = _sch_make_schedule(user_id=uuid.UUID(_sch_OTHER_ID))
+        resp = _sch_make_admin_client(
+            db=_sch_make_db(row=s)
+        ).get(f"/api/v1/schedules/{_sch_SCHED_ID}")
+        assert resp.status_code == 200
+
+    def test_get_cron_in_response(self):
+        s = _sch_make_schedule(cron_expression="30 9 * * 5")
+        resp = _sch_make_client(
+            db=_sch_make_db(row=s)
+        ).get(f"/api/v1/schedules/{_sch_SCHED_ID}")
+        assert resp.json()["cron_expression"] == "30 9 * * 5"
+
+
+class TestScheduleCreate:
+    def test_create_returns_201(self):
+        resp = _sch_make_client(db=_sch_make_db()).post(
+            "/api/v1/schedules/", json=_sch_VALID_BODY
+        )
+        assert resp.status_code == 201
+
+    def test_create_response_has_schedule_id(self):
+        resp = _sch_make_client(db=_sch_make_db()).post(
+            "/api/v1/schedules/", json=_sch_VALID_BODY
+        )
+        assert "schedule_id" in resp.json()
+
+    def test_create_owner_is_calling_user(self):
+        db = _sch_make_db()
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["s"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _sch_make_client(db=db).post("/api/v1/schedules/", json=_sch_VALID_BODY)
+        if captured.get("s"):
+            assert str(captured["s"].user_id) == _sch_USER_ID
+
+    def test_create_last_run_starts_none(self):
+        db = _sch_make_db()
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["s"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _sch_make_client(db=db).post("/api/v1/schedules/", json=_sch_VALID_BODY)
+        if captured.get("s"):
+            assert captured["s"].last_run_at is None
+
+    def test_create_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _sch_make_client(db=_sch_make_db(), audit=mock_audit).post(
+            "/api/v1/schedules/", json=_sch_VALID_BODY
+        )
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "schedule.created"
+
+    def test_create_invalid_cron_returns_422(self):
+        body = {**_sch_VALID_BODY, "cron_expression": "not-a-cron"}
+        resp = _sch_make_client(db=_sch_make_db()).post(
+            "/api/v1/schedules/", json=body
+        )
+        assert resp.status_code == 422
+
+    def test_create_six_field_cron_returns_422(self):
+        """6-field cron (seconds) is not supported — must be 5-field."""
+        body = {**_sch_VALID_BODY, "cron_expression": "0 0 8 * * 1"}
+        resp = _sch_make_client(db=_sch_make_db()).post(
+            "/api/v1/schedules/", json=body
+        )
+        assert resp.status_code == 422
+
+    def test_create_invalid_output_format_returns_422(self):
+        body = {**_sch_VALID_BODY, "output_format": "docx"}
+        resp = _sch_make_client(db=_sch_make_db()).post(
+            "/api/v1/schedules/", json=body
+        )
+        assert resp.status_code == 422
+
+    def test_create_valid_output_formats(self):
+        for fmt in ("csv", "excel", "pdf"):
+            resp = _sch_make_client(db=_sch_make_db()).post(
+                "/api/v1/schedules/", json={**_sch_VALID_BODY, "output_format": fmt}
+            )
+            assert resp.status_code == 201, f"Failed for format: {fmt}"
+
+    def test_create_without_saved_query_is_valid(self):
+        body = {**_sch_VALID_BODY}
+        del body["saved_query_id"]
+        resp = _sch_make_client(db=_sch_make_db()).post(
+            "/api/v1/schedules/", json=body
+        )
+        assert resp.status_code == 201
+
+    def test_create_requires_name_and_cron(self):
+        from pydantic import ValidationError as PydanticError
+        resp = _sch_make_client(db=_sch_make_db()).post(
+            "/api/v1/schedules/", json={}
+        )
+        assert resp.status_code == 422
+
+    def test_create_delivery_targets_stored(self):
+        db = _sch_make_db()
+        captured = {}
+        orig_add = db.add
+
+        def cap(obj):
+            captured["s"] = obj
+            orig_add(obj)
+
+        db.add = cap
+        _sch_make_client(db=db).post("/api/v1/schedules/", json=_sch_VALID_BODY)
+        if captured.get("s"):
+            assert isinstance(captured["s"].delivery_targets, list)
+            assert len(captured["s"].delivery_targets) == 1
+
+    def test_create_audit_contains_cron(self):
+        mock_audit = _make_audit()
+        _sch_make_client(db=_sch_make_db(), audit=mock_audit).post(
+            "/api/v1/schedules/", json=_sch_VALID_BODY
+        )
+        question = mock_audit.log.call_args.kwargs["question"]
+        assert "0 8 * * 1" in question
+
+
+class TestScheduleUpdate:
+    def test_update_name_returns_200(self):
+        s = _sch_make_schedule()
+        resp = _sch_make_client(db=_sch_make_db(row=s)).patch(
+            f"/api/v1/schedules/{_sch_SCHED_ID}", json={"name": "Daily Report"}
+        )
+        assert resp.status_code == 200
+
+    def test_update_name_mutates_model(self):
+        s = _sch_make_schedule()
+        _sch_make_client(db=_sch_make_db(row=s)).patch(
+            f"/api/v1/schedules/{_sch_SCHED_ID}", json={"name": "Daily Report"}
+        )
+        assert s.name == "Daily Report"
+
+    def test_update_missing_returns_404(self):
+        assert _sch_make_client(db=_sch_make_db(row=None)).patch(
+            f"/api/v1/schedules/{_sch_SCHED_ID}", json={"name": "X"}
+        ).status_code == 404
+
+    def test_update_other_users_schedule_returns_403(self):
+        s = _sch_make_schedule(user_id=uuid.UUID(_sch_OTHER_ID))
+        resp = _sch_make_client(
+            current_user=_sch_USER_DICT, db=_sch_make_db(row=s)
+        ).patch(f"/api/v1/schedules/{_sch_SCHED_ID}", json={"name": "X"})
+        assert resp.status_code == 403
+
+    def test_admin_can_update_any_schedule(self):
+        s = _sch_make_schedule(user_id=uuid.UUID(_sch_OTHER_ID))
+        resp = _sch_make_admin_client(db=_sch_make_db(row=s)).patch(
+            f"/api/v1/schedules/{_sch_SCHED_ID}", json={"name": "Admin Edit"}
+        )
+        assert resp.status_code == 200
+
+    def test_update_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _sch_make_client(
+            db=_sch_make_db(row=_sch_make_schedule()), audit=mock_audit
+        ).patch(f"/api/v1/schedules/{_sch_SCHED_ID}", json={"name": "New"})
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "schedule.updated"
+
+    def test_update_invalid_cron_returns_422(self):
+        resp = _sch_make_client(db=_sch_make_db(row=_sch_make_schedule())).patch(
+            f"/api/v1/schedules/{_sch_SCHED_ID}",
+            json={"cron_expression": "bad-cron"},
+        )
+        assert resp.status_code == 422
+
+    def test_update_valid_cron_accepted(self):
+        s = _sch_make_schedule()
+        resp = _sch_make_client(db=_sch_make_db(row=s)).patch(
+            f"/api/v1/schedules/{_sch_SCHED_ID}",
+            json={"cron_expression": "30 9 * * 5"},
+        )
+        assert resp.status_code == 200
+        assert s.cron_expression == "30 9 * * 5"
+
+    def test_update_timezone(self):
+        s = _sch_make_schedule(timezone="UTC")
+        _sch_make_client(db=_sch_make_db(row=s)).patch(
+            f"/api/v1/schedules/{_sch_SCHED_ID}",
+            json={"timezone": "Europe/London"},
+        )
+        assert s.timezone == "Europe/London"
+
+    def test_update_delivery_targets(self):
+        s = _sch_make_schedule(delivery_targets=[])
+        new_targets = [{"platform_id": "bbbbbbbb-0000-0000-0000-000000000001", "destination": "#ops"}]
+        _sch_make_client(db=_sch_make_db(row=s)).patch(
+            f"/api/v1/schedules/{_sch_SCHED_ID}",
+            json={"delivery_targets": new_targets},
+        )
+        assert len(s.delivery_targets) == 1
+
+
+class TestScheduleDelete:
+    def test_delete_returns_204(self):
+        resp = _sch_make_client(
+            db=_sch_make_db(row=_sch_make_schedule())
+        ).delete(f"/api/v1/schedules/{_sch_SCHED_ID}")
+        assert resp.status_code == 204
+
+    def test_delete_missing_returns_404(self):
+        assert _sch_make_client(
+            db=_sch_make_db(row=None)
+        ).delete(f"/api/v1/schedules/{_sch_SCHED_ID}").status_code == 404
+
+    def test_delete_other_users_schedule_returns_403(self):
+        s = _sch_make_schedule(user_id=uuid.UUID(_sch_OTHER_ID))
+        resp = _sch_make_client(
+            current_user=_sch_USER_DICT, db=_sch_make_db(row=s)
+        ).delete(f"/api/v1/schedules/{_sch_SCHED_ID}")
+        assert resp.status_code == 403
+
+    def test_admin_can_delete_any_schedule(self):
+        s = _sch_make_schedule(user_id=uuid.UUID(_sch_OTHER_ID))
+        resp = _sch_make_admin_client(
+            db=_sch_make_db(row=s)
+        ).delete(f"/api/v1/schedules/{_sch_SCHED_ID}")
+        assert resp.status_code == 204
+
+    def test_delete_calls_db_delete(self):
+        s = _sch_make_schedule()
+        db = _sch_make_db(row=s)
+        _sch_make_client(db=db).delete(f"/api/v1/schedules/{_sch_SCHED_ID}")
+        db.delete.assert_called_once_with(s)
+
+    def test_delete_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _sch_make_client(
+            db=_sch_make_db(row=_sch_make_schedule()), audit=mock_audit
+        ).delete(f"/api/v1/schedules/{_sch_SCHED_ID}")
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "schedule.deleted"
+
+
+class TestScheduleToggle:
+    def test_toggle_active_to_inactive(self):
+        s = _sch_make_schedule(is_active=True)
+        _sch_make_client(db=_sch_make_db(row=s)).patch(
+            f"/api/v1/schedules/{_sch_SCHED_ID}/toggle"
+        )
+        assert s.is_active is False
+
+    def test_toggle_inactive_to_active(self):
+        s = _sch_make_schedule(is_active=False)
+        _sch_make_client(db=_sch_make_db(row=s)).patch(
+            f"/api/v1/schedules/{_sch_SCHED_ID}/toggle"
+        )
+        assert s.is_active is True
+
+    def test_toggle_returns_200(self):
+        assert _sch_make_client(
+            db=_sch_make_db(row=_sch_make_schedule())
+        ).patch(f"/api/v1/schedules/{_sch_SCHED_ID}/toggle").status_code == 200
+
+    def test_toggle_response_has_is_active(self):
+        resp = _sch_make_client(
+            db=_sch_make_db(row=_sch_make_schedule(is_active=True))
+        ).patch(f"/api/v1/schedules/{_sch_SCHED_ID}/toggle")
+        assert "is_active" in resp.json()
+
+    def test_toggle_response_has_message(self):
+        resp = _sch_make_client(
+            db=_sch_make_db(row=_sch_make_schedule(is_active=True))
+        ).patch(f"/api/v1/schedules/{_sch_SCHED_ID}/toggle")
+        assert "message" in resp.json()
+
+    def test_toggle_missing_returns_404(self):
+        assert _sch_make_client(
+            db=_sch_make_db(row=None)
+        ).patch(f"/api/v1/schedules/{_sch_SCHED_ID}/toggle").status_code == 404
+
+    def test_toggle_other_users_schedule_returns_403(self):
+        s = _sch_make_schedule(user_id=uuid.UUID(_sch_OTHER_ID))
+        resp = _sch_make_client(
+            current_user=_sch_USER_DICT, db=_sch_make_db(row=s)
+        ).patch(f"/api/v1/schedules/{_sch_SCHED_ID}/toggle")
+        assert resp.status_code == 403
+
+    def test_toggle_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _sch_make_client(
+            db=_sch_make_db(row=_sch_make_schedule(is_active=True)), audit=mock_audit
+        ).patch(f"/api/v1/schedules/{_sch_SCHED_ID}/toggle")
+        status_val = mock_audit.log.call_args.kwargs["execution_status"]
+        assert status_val in ("schedule.enabled", "schedule.disabled")
+
+    def test_toggle_audit_reflects_new_state(self):
+        mock_audit = _make_audit()
+        # Start active → toggle → should log "disabled"
+        _sch_make_client(
+            db=_sch_make_db(row=_sch_make_schedule(is_active=True)), audit=mock_audit
+        ).patch(f"/api/v1/schedules/{_sch_SCHED_ID}/toggle")
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "schedule.disabled"
+
+
+class TestScheduleOwnershipInvariants:
+    """Invariant tests for T52 — IDOR prevention on schedules."""
+
+    def _other_sched(self):
+        return _sch_make_schedule(user_id=uuid.UUID(_sch_OTHER_ID))
+
+    def test_get_blocked_for_non_owner(self):
+        assert _sch_make_client(
+            current_user=_sch_USER_DICT, db=_sch_make_db(row=self._other_sched())
+        ).get(f"/api/v1/schedules/{_sch_SCHED_ID}").status_code == 403
+
+    def test_update_blocked_for_non_owner(self):
+        assert _sch_make_client(
+            current_user=_sch_USER_DICT, db=_sch_make_db(row=self._other_sched())
+        ).patch(f"/api/v1/schedules/{_sch_SCHED_ID}", json={"name": "X"}).status_code == 403
+
+    def test_delete_blocked_for_non_owner(self):
+        assert _sch_make_client(
+            current_user=_sch_USER_DICT, db=_sch_make_db(row=self._other_sched())
+        ).delete(f"/api/v1/schedules/{_sch_SCHED_ID}").status_code == 403
+
+    def test_toggle_blocked_for_non_owner(self):
+        assert _sch_make_client(
+            current_user=_sch_USER_DICT, db=_sch_make_db(row=self._other_sched())
+        ).patch(f"/api/v1/schedules/{_sch_SCHED_ID}/toggle").status_code == 403
+
+    def test_admin_bypasses_all_ownership_checks(self):
+        s = self._other_sched()
+        assert _sch_make_admin_client(db=_sch_make_db(row=s)).get(
+            f"/api/v1/schedules/{_sch_SCHED_ID}"
+        ).status_code == 200
+        s2 = self._other_sched()
+        assert _sch_make_admin_client(db=_sch_make_db(row=s2)).delete(
+            f"/api/v1/schedules/{_sch_SCHED_ID}"
+        ).status_code == 204
+
+
+class TestScheduleSchemas:
+    """Pydantic v2 schema validation for schedule management."""
+
+    def test_create_requires_name_and_cron(self):
+        from app.schemas.schedule import ScheduleCreateRequest
+        from pydantic import ValidationError as PydanticError
+        with pytest.raises(PydanticError):
+            ScheduleCreateRequest()
+
+    def test_create_cron_validated_at_schema_level(self):
+        from app.schemas.schedule import ScheduleCreateRequest
+        from pydantic import ValidationError as PydanticError
+        with pytest.raises(PydanticError):
+            ScheduleCreateRequest(name="X", cron_expression="not-cron")
+
+    def test_create_valid_cron_passes(self):
+        from app.schemas.schedule import ScheduleCreateRequest
+        req = ScheduleCreateRequest(name="X", cron_expression="0 8 * * 1")
+        assert req.cron_expression == "0 8 * * 1"
+
+    def test_create_defaults(self):
+        from app.schemas.schedule import ScheduleCreateRequest
+        req = ScheduleCreateRequest(name="X", cron_expression="0 8 * * 1")
+        assert req.timezone == "UTC"
+        assert req.output_format == "csv"
+        assert req.delivery_targets == []
+        assert req.is_active is True
+
+    def test_create_invalid_output_format_rejected(self):
+        from app.schemas.schedule import ScheduleCreateRequest
+        from pydantic import ValidationError as PydanticError
+        with pytest.raises(PydanticError):
+            ScheduleCreateRequest(
+                name="X", cron_expression="0 8 * * 1", output_format="docx"
+            )
+
+    def test_update_request_all_optional(self):
+        from app.schemas.schedule import ScheduleUpdateRequest
+        req = ScheduleUpdateRequest()
+        assert req.name is None and req.cron_expression is None
+
+    def test_update_cron_validated_when_supplied(self):
+        from app.schemas.schedule import ScheduleUpdateRequest
+        from pydantic import ValidationError as PydanticError
+        with pytest.raises(PydanticError):
+            ScheduleUpdateRequest(cron_expression="bad")
+
+    def test_delivery_target_schema(self):
+        from app.schemas.schedule import DeliveryTarget
+        t = DeliveryTarget(
+            platform_id="aaaaaaaa-0000-0000-0000-000000000001",
+            destination="#finance",
+        )
+        assert t.destination == "#finance"
+
+    def test_response_schema_has_last_run_fields(self):
+        from app.schemas.schedule import ScheduleResponse
+        fields = ScheduleResponse.model_fields
+        assert "last_run_at" in fields and "last_run_status" in fields and "next_run_at" in fields
+
+    def test_list_response_schema(self):
+        from app.schemas.schedule import ScheduleListResponse
+        r = ScheduleListResponse(schedules=[], total=0, skip=0, limit=50)
+        assert r.total == 0
+
+    def test_toggle_response_schema(self):
+        from app.schemas.schedule import ScheduleToggleResponse
+        r = ScheduleToggleResponse(
+            schedule_id=_sch_SCHED_ID, name="X", is_active=False, message="disabled"
+        )
+        assert r.is_active is False
+
+
+class TestCronValidation:
+    """Unit tests for the cron expression validator."""
+
+    def _validate(self, expr: str) -> str:
+        from app.schemas.schedule import _validate_cron
+        return _validate_cron(expr)
+
+    def test_basic_weekday_cron(self):
+        assert self._validate("0 8 * * 1") == "0 8 * * 1"
+
+    def test_daily_midnight(self):
+        assert self._validate("0 0 * * *") == "0 0 * * *"
+
+    def test_every_15_minutes(self):
+        assert self._validate("*/15 * * * *") == "*/15 * * * *"
+
+    def test_first_of_month(self):
+        assert self._validate("0 9 1 * *") == "0 9 1 * *"
+
+    def test_weekday_range(self):
+        assert self._validate("0 8 * * 1-5") == "0 8 * * 1-5"
+
+    def test_strips_extra_whitespace(self):
+        assert self._validate("  0 8 * * 1  ") == "0 8 * * 1"
+
+    def test_empty_string_raises(self):
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="must not be empty"):
+            self._validate("")
+
+    def test_four_fields_raises(self):
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="5 fields"):
+            self._validate("0 8 * *")
+
+    def test_six_fields_raises(self):
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="5 fields"):
+            self._validate("0 0 8 * * 1")
+
+    def test_invalid_characters_raise(self):
+        import pytest as _pytest
+        with _pytest.raises(ValueError):
+            self._validate("abc def * * *")
+
+
+
+# =============================================================================
+# ███████╗ ██████╗██╗  ██╗███████╗███╗   ███╗ █████╗   (Component 16)
+# =============================================================================
+
+

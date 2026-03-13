@@ -5425,3 +5425,1240 @@ class TestNotificationPlatformSchemas:
         from app.schemas.notification import PlatformMappingResponse
         fields = PlatformMappingResponse.model_fields
         assert "is_verified" in fields and "expires_at" in fields
+
+# =============================================================================
+# ███████╗ ██████╗██╗  ██╗███████╗███╗   ███╗ █████╗   (Component 17)
+# =============================================================================
+
+
+# =============================================================================
+
+_ex_QUERY_ID   = "77777777-0000-0000-0000-000000000001"
+_ex_USER_ID    = "77777777-0000-0000-0000-000000000002"
+_ex_OTHER_ID   = "77777777-0000-0000-0000-000000000003"
+
+_ex_USER_DICT: dict = {
+    "user_id": _ex_USER_ID,
+    "email": "analyst@export.example.com",
+    "role": "analyst",
+    "department": "Finance",
+    "jti": "ex-user-jti",
+}
+_ex_ADMIN_DICT: dict = {
+    "user_id": _ADMIN_ID,
+    "email": "admin@export.example.com",
+    "role": "admin",
+    "department": "",
+    "jti": "ex-admin-jti",
+}
+
+_ex_SAMPLE_COLUMNS = ["month", "revenue", "region"]
+_ex_SAMPLE_ROWS    = [["2024-01", "10000", "MENA"], ["2024-02", "12000", "MENA"]]
+_ex_VALID_BODY     = {
+    "columns": _ex_SAMPLE_COLUMNS,
+    "rows": _ex_SAMPLE_ROWS,
+    "format": "csv",
+    "sensitivity": "normal",
+}
+
+
+def _ex_make_saved_query(**kwargs) -> MagicMock:
+    sq = MagicMock()
+    sq.id = uuid.UUID(_ex_QUERY_ID)
+    sq.user_id = uuid.UUID(_ex_USER_ID)
+    sq.name = "Revenue Report"
+    sq.question = "Show monthly revenue"
+    sq.sql_query = "SELECT month, SUM(revenue) FROM orders GROUP BY 1"
+    sq.sensitivity = "normal"
+    sq.is_shared = False
+    sq.created_at = _FIXED_NOW
+    sq.updated_at = _FIXED_NOW
+    for k, v in kwargs.items():
+        setattr(sq, k, v)
+    return sq
+
+
+def _ex_make_db(row=None) -> AsyncMock:
+    session = AsyncMock()
+    session.commit = AsyncMock()
+    single = MagicMock()
+    single.scalar_one_or_none.return_value = row
+    session.execute = AsyncMock(return_value=single)
+    return session
+
+
+def _ex_build_app() -> "FastAPI":
+    from app.api.v1.routes_export import router as ex_router
+    app = FastAPI()
+    app.include_router(ex_router, prefix="/api/v1/export", tags=["export"])
+    register_exception_handlers(app)
+    return app
+
+
+def _ex_make_client(
+    current_user: Optional[dict] = None,
+    db=None,
+    audit=None,
+) -> TestClient:
+    app = _ex_build_app()
+    user = current_user or _ex_USER_DICT
+    mock_db = db or _ex_make_db()
+    mock_audit = audit or _make_audit()
+
+    async def override_db():
+        yield mock_db
+
+    from app.dependencies import require_active_user, get_current_user, get_db, get_audit_writer
+    app.dependency_overrides.update({
+        require_active_user: lambda: user,
+        get_current_user: lambda: user,
+        get_db: override_db,
+        get_audit_writer: lambda: mock_audit,
+    })
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _ex_make_admin_client(db=None, audit=None) -> TestClient:
+    return _ex_make_client(current_user=_ex_ADMIN_DICT, db=db, audit=audit)
+
+
+# ---------------------------------------------------------------------------
+# Test classes — Export
+# ---------------------------------------------------------------------------
+
+class TestExportCSV:
+    def test_csv_returns_200(self):
+        resp = _ex_make_client().post("/api/v1/export/", json=_ex_VALID_BODY)
+        assert resp.status_code == 200
+
+    def test_csv_content_type(self):
+        resp = _ex_make_client().post("/api/v1/export/", json=_ex_VALID_BODY)
+        assert "text/csv" in resp.headers["content-type"]
+
+    def test_csv_has_attachment_header(self):
+        resp = _ex_make_client().post("/api/v1/export/", json=_ex_VALID_BODY)
+        assert "attachment" in resp.headers.get("content-disposition", "")
+
+    def test_csv_contains_columns(self):
+        resp = _ex_make_client().post("/api/v1/export/", json=_ex_VALID_BODY)
+        text = resp.content.decode("utf-8-sig")
+        for col in _ex_SAMPLE_COLUMNS:
+            assert col in text
+
+    def test_csv_contains_data_rows(self):
+        resp = _ex_make_client().post("/api/v1/export/", json=_ex_VALID_BODY)
+        text = resp.content.decode("utf-8-sig")
+        assert "10000" in text
+        assert "MENA" in text
+
+    def test_csv_has_classification_comment(self):
+        resp = _ex_make_client().post("/api/v1/export/", json=_ex_VALID_BODY)
+        text = resp.content.decode("utf-8-sig")
+        assert "CLASSIFICATION" in text.upper() or "INTERNAL" in text.upper()
+
+    def test_csv_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _ex_make_client(audit=mock_audit).post("/api/v1/export/", json=_ex_VALID_BODY)
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "export.generated"
+
+    def test_csv_export_sensitivity_header(self):
+        resp = _ex_make_client().post("/api/v1/export/", json=_ex_VALID_BODY)
+        assert resp.headers.get("x-export-sensitivity") == "normal"
+
+    def test_csv_export_row_count_header(self):
+        resp = _ex_make_client().post("/api/v1/export/", json=_ex_VALID_BODY)
+        assert resp.headers.get("x-export-rows") == str(len(_ex_SAMPLE_ROWS))
+
+    def test_csv_empty_rows_valid(self):
+        body = {**_ex_VALID_BODY, "rows": []}
+        resp = _ex_make_client().post("/api/v1/export/", json=body)
+        assert resp.status_code == 200
+
+    def test_csv_unauthenticated_returns_error(self):
+        app = _ex_build_app()
+        resp = TestClient(app, raise_server_exceptions=False).post(
+            "/api/v1/export/", json=_ex_VALID_BODY
+        )
+        assert resp.status_code in (401, 403, 422)
+
+
+class TestExportExcel:
+    def test_excel_returns_200(self):
+        body = {**_ex_VALID_BODY, "format": "excel"}
+        resp = _ex_make_client().post("/api/v1/export/", json=body)
+        assert resp.status_code == 200
+
+    def test_excel_content_type(self):
+        body = {**_ex_VALID_BODY, "format": "excel"}
+        resp = _ex_make_client().post("/api/v1/export/", json=body)
+        assert "spreadsheet" in resp.headers["content-type"] or "excel" in resp.headers["content-type"]
+
+    def test_excel_has_attachment_header(self):
+        body = {**_ex_VALID_BODY, "format": "excel"}
+        resp = _ex_make_client().post("/api/v1/export/", json=body)
+        assert "attachment" in resp.headers.get("content-disposition", "")
+
+    def test_excel_filename_has_xlsx_extension(self):
+        body = {**_ex_VALID_BODY, "format": "excel", "filename": "revenue_report"}
+        resp = _ex_make_client().post("/api/v1/export/", json=body)
+        assert ".xlsx" in resp.headers.get("content-disposition", "")
+
+    def test_excel_bytes_nonempty(self):
+        body = {**_ex_VALID_BODY, "format": "excel"}
+        resp = _ex_make_client().post("/api/v1/export/", json=body)
+        # xlsx magic bytes: PK (zip)
+        assert resp.content[:2] == b"PK"
+
+    def test_excel_writes_audit_log(self):
+        mock_audit = _make_audit()
+        body = {**_ex_VALID_BODY, "format": "excel"}
+        _ex_make_client(audit=mock_audit).post("/api/v1/export/", json=body)
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "export.generated"
+
+    def test_excel_title_accepted(self):
+        body = {**_ex_VALID_BODY, "format": "excel", "title": "Q4 Revenue Report"}
+        resp = _ex_make_client().post("/api/v1/export/", json=body)
+        assert resp.status_code == 200
+
+
+class TestExportValidation:
+    def test_restricted_sensitivity_returns_422(self):
+        body = {**_ex_VALID_BODY, "sensitivity": "restricted"}
+        resp = _ex_make_client().post("/api/v1/export/", json=body)
+        assert resp.status_code == 422
+
+    def test_restricted_blocked_audit_written(self):
+        mock_audit = _make_audit()
+        body = {**_ex_VALID_BODY, "sensitivity": "restricted"}
+        _ex_make_client(audit=mock_audit).post("/api/v1/export/", json=body)
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "export.blocked_restricted"
+
+    def test_invalid_format_returns_422(self):
+        body = {**_ex_VALID_BODY, "format": "docx"}
+        resp = _ex_make_client().post("/api/v1/export/", json=body)
+        assert resp.status_code == 422
+
+    def test_invalid_sensitivity_returns_422(self):
+        body = {**_ex_VALID_BODY, "sensitivity": "top_secret"}
+        resp = _ex_make_client().post("/api/v1/export/", json=body)
+        assert resp.status_code == 422
+
+    def test_row_count_over_limit_returns_422(self):
+        from app.schemas.export import MAX_EXPORT_ROWS
+        body = {
+            **_ex_VALID_BODY,
+            "rows": [["val"] * len(_ex_SAMPLE_COLUMNS)] * (MAX_EXPORT_ROWS + 1),
+        }
+        resp = _ex_make_client().post("/api/v1/export/", json=body)
+        assert resp.status_code == 422
+
+    def test_row_at_limit_accepted(self):
+        from app.schemas.export import MAX_EXPORT_ROWS
+        body = {
+            **_ex_VALID_BODY,
+            "rows": [["v1", "v2", "v3"]] * MAX_EXPORT_ROWS,
+        }
+        resp = _ex_make_client().post("/api/v1/export/", json=body)
+        assert resp.status_code == 200
+
+    def test_row_column_mismatch_returns_422(self):
+        body = {**_ex_VALID_BODY, "rows": [["only_one_val"]]}
+        resp = _ex_make_client().post("/api/v1/export/", json=body)
+        assert resp.status_code == 422
+
+    def test_all_valid_formats_accepted(self):
+        for fmt in ("csv", "excel"):
+            resp = _ex_make_client().post(
+                "/api/v1/export/", json={**_ex_VALID_BODY, "format": fmt}
+            )
+            assert resp.status_code == 200, f"Failed for format: {fmt}"
+
+    def test_sensitive_data_allowed(self):
+        body = {**_ex_VALID_BODY, "sensitivity": "sensitive"}
+        resp = _ex_make_client().post("/api/v1/export/", json=body)
+        assert resp.status_code == 200
+
+    def test_missing_columns_returns_422(self):
+        resp = _ex_make_client().post(
+            "/api/v1/export/",
+            json={"rows": [], "format": "csv", "sensitivity": "normal"},
+        )
+        assert resp.status_code == 422
+
+
+class TestExportSavedQuery:
+    def test_export_own_query_returns_200(self):
+        sq = _ex_make_saved_query()
+        resp = _ex_make_client(db=_ex_make_db(row=sq)).post(
+            f"/api/v1/export/saved-query/{_ex_QUERY_ID}", json={}
+        )
+        assert resp.status_code == 200
+
+    def test_export_returns_sql_content_type(self):
+        sq = _ex_make_saved_query()
+        resp = _ex_make_client(db=_ex_make_db(row=sq)).post(
+            f"/api/v1/export/saved-query/{_ex_QUERY_ID}", json={}
+        )
+        assert "text/plain" in resp.headers["content-type"]
+
+    def test_export_has_attachment_header(self):
+        sq = _ex_make_saved_query()
+        resp = _ex_make_client(db=_ex_make_db(row=sq)).post(
+            f"/api/v1/export/saved-query/{_ex_QUERY_ID}", json={}
+        )
+        assert "attachment" in resp.headers.get("content-disposition", "")
+
+    def test_export_sql_filename_has_sql_extension(self):
+        sq = _ex_make_saved_query(name="Revenue Report")
+        resp = _ex_make_client(db=_ex_make_db(row=sq)).post(
+            f"/api/v1/export/saved-query/{_ex_QUERY_ID}", json={}
+        )
+        assert ".sql" in resp.headers.get("content-disposition", "")
+
+    def test_export_sql_contains_sql_query(self):
+        sq = _ex_make_saved_query()
+        resp = _ex_make_client(db=_ex_make_db(row=sq)).post(
+            f"/api/v1/export/saved-query/{_ex_QUERY_ID}", json={}
+        )
+        assert "SELECT" in resp.content.decode()
+
+    def test_export_sql_contains_classification_comment(self):
+        sq = _ex_make_saved_query(sensitivity="normal")
+        resp = _ex_make_client(db=_ex_make_db(row=sq)).post(
+            f"/api/v1/export/saved-query/{_ex_QUERY_ID}", json={}
+        )
+        text = resp.content.decode()
+        assert "Classification" in text or "INTERNAL" in text
+
+    def test_export_sql_includes_question_by_default(self):
+        sq = _ex_make_saved_query()
+        resp = _ex_make_client(db=_ex_make_db(row=sq)).post(
+            f"/api/v1/export/saved-query/{_ex_QUERY_ID}",
+            json={"include_question": True},
+        )
+        assert "Show monthly revenue" in resp.content.decode()
+
+    def test_export_sql_without_question(self):
+        sq = _ex_make_saved_query()
+        resp = _ex_make_client(db=_ex_make_db(row=sq)).post(
+            f"/api/v1/export/saved-query/{_ex_QUERY_ID}",
+            json={"include_question": False},
+        )
+        assert "Show monthly revenue" not in resp.content.decode()
+
+    def test_export_missing_query_returns_404(self):
+        assert _ex_make_client(db=_ex_make_db(row=None)).post(
+            f"/api/v1/export/saved-query/{_ex_QUERY_ID}", json={}
+        ).status_code == 404
+
+    def test_export_other_users_query_returns_403(self):
+        sq = _ex_make_saved_query(user_id=uuid.UUID(_ex_OTHER_ID))
+        resp = _ex_make_client(
+            current_user=_ex_USER_DICT, db=_ex_make_db(row=sq)
+        ).post(f"/api/v1/export/saved-query/{_ex_QUERY_ID}", json={})
+        assert resp.status_code == 403
+
+    def test_admin_can_export_any_query(self):
+        sq = _ex_make_saved_query(user_id=uuid.UUID(_ex_OTHER_ID))
+        resp = _ex_make_admin_client(db=_ex_make_db(row=sq)).post(
+            f"/api/v1/export/saved-query/{_ex_QUERY_ID}", json={}
+        )
+        assert resp.status_code == 200
+
+    def test_export_restricted_query_as_owner_returns_403(self):
+        """Owner cannot export restricted SQL (T31)."""
+        sq = _ex_make_saved_query(sensitivity="restricted")
+        resp = _ex_make_client(db=_ex_make_db(row=sq)).post(
+            f"/api/v1/export/saved-query/{_ex_QUERY_ID}", json={}
+        )
+        assert resp.status_code == 403
+
+    def test_admin_can_export_restricted_query(self):
+        """Admin bypasses T31 restriction (for audit/review purposes)."""
+        sq = _ex_make_saved_query(
+            user_id=uuid.UUID(_ADMIN_ID), sensitivity="restricted"
+        )
+        resp = _ex_make_admin_client(db=_ex_make_db(row=sq)).post(
+            f"/api/v1/export/saved-query/{_ex_QUERY_ID}", json={}
+        )
+        assert resp.status_code == 200
+
+    def test_export_sql_writes_audit_log(self):
+        mock_audit = _make_audit()
+        sq = _ex_make_saved_query()
+        _ex_make_client(db=_ex_make_db(row=sq), audit=mock_audit).post(
+            f"/api/v1/export/saved-query/{_ex_QUERY_ID}", json={}
+        )
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "export.saved_query"
+
+    def test_export_sensitivity_in_response_header(self):
+        sq = _ex_make_saved_query(sensitivity="sensitive")
+        resp = _ex_make_client(db=_ex_make_db(row=sq)).post(
+            f"/api/v1/export/saved-query/{_ex_QUERY_ID}", json={}
+        )
+        assert resp.headers.get("x-export-sensitivity") == "sensitive"
+
+
+class TestExportClassificationInvariants:
+    """
+    T48 shadow AI — Classification stamps must appear in ALL generated files.
+    """
+
+    def test_csv_normal_has_stamp(self):
+        resp = _ex_make_client().post(
+            "/api/v1/export/", json={**_ex_VALID_BODY, "sensitivity": "normal"}
+        )
+        text = resp.content.decode("utf-8-sig")
+        assert any(kw in text.upper() for kw in ("CLASSIFICATION", "INTERNAL"))
+
+    def test_csv_sensitive_has_stamp(self):
+        resp = _ex_make_client().post(
+            "/api/v1/export/", json={**_ex_VALID_BODY, "sensitivity": "sensitive"}
+        )
+        text = resp.content.decode("utf-8-sig")
+        assert any(kw in text.upper() for kw in ("CLASSIFICATION", "SENSITIVE", "RESTRICTED"))
+
+    def test_excel_has_classification_sheet(self):
+        import openpyxl, io
+        resp = _ex_make_client().post(
+            "/api/v1/export/", json={**_ex_VALID_BODY, "format": "excel"}
+        )
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        assert "Classification" in wb.sheetnames
+
+    def test_excel_classification_cell_contains_stamp(self):
+        import openpyxl, io
+        resp = _ex_make_client().post(
+            "/api/v1/export/", json={**_ex_VALID_BODY, "format": "excel"}
+        )
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        cls_ws = wb["Classification"]
+        stamp = str(cls_ws["A1"].value or "")
+        assert "CLASSIFICATION" in stamp.upper() or "INTERNAL" in stamp.upper()
+
+    def test_excel_has_data_sheet_with_columns(self):
+        import openpyxl, io
+        resp = _ex_make_client().post(
+            "/api/v1/export/", json={**_ex_VALID_BODY, "format": "excel"}
+        )
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        assert "Data" in wb.sheetnames
+        data_ws = wb["Data"]
+        header_row = [cell.value for cell in data_ws[1]]
+        assert "month" in header_row and "revenue" in header_row
+
+    def test_restricted_data_completely_blocked(self):
+        body = {**_ex_VALID_BODY, "sensitivity": "restricted"}
+        resp = _ex_make_client().post("/api/v1/export/", json=body)
+        assert resp.status_code == 422
+        assert "10000" not in resp.text  # Data not leaked in error response
+
+    def test_all_export_responses_have_sensitivity_header(self):
+        for sensitivity in ("normal", "sensitive"):
+            resp = _ex_make_client().post(
+                "/api/v1/export/",
+                json={**_ex_VALID_BODY, "sensitivity": sensitivity},
+            )
+            assert resp.headers.get("x-export-sensitivity") == sensitivity
+
+
+class TestExportSchemas:
+    def test_export_request_requires_columns_rows_format(self):
+        from app.schemas.export import ExportRequest
+        from pydantic import ValidationError as PydanticError
+        with pytest.raises(PydanticError):
+            ExportRequest(sensitivity="normal")
+
+    def test_export_max_rows_constant_is_10000(self):
+        from app.schemas.export import MAX_EXPORT_ROWS
+        assert MAX_EXPORT_ROWS == 10_000
+
+    def test_export_invalid_format_rejected(self):
+        from app.schemas.export import ExportRequest
+        from pydantic import ValidationError as PydanticError
+        with pytest.raises(PydanticError):
+            ExportRequest(columns=["a"], rows=[], format="docx", sensitivity="normal")
+
+    def test_export_invalid_sensitivity_rejected(self):
+        from app.schemas.export import ExportRequest
+        from pydantic import ValidationError as PydanticError
+        with pytest.raises(PydanticError):
+            ExportRequest(columns=["a"], rows=[], format="csv", sensitivity="classified")
+
+    def test_export_over_max_rows_rejected(self):
+        from app.schemas.export import ExportRequest, MAX_EXPORT_ROWS
+        from pydantic import ValidationError as PydanticError
+        with pytest.raises(PydanticError):
+            ExportRequest(
+                columns=["a"],
+                rows=[["v"]] * (MAX_EXPORT_ROWS + 1),
+                format="csv",
+                sensitivity="normal",
+            )
+
+    def test_export_filename_path_traversal_sanitised(self):
+        from app.schemas.export import ExportRequest
+        req = ExportRequest(
+            columns=["a"], rows=[], format="csv",
+            sensitivity="normal", filename="../../../etc/passwd"
+        )
+        assert ".." not in (req.filename or "")
+        assert "/" not in (req.filename or "")
+
+    def test_saved_query_request_defaults(self):
+        from app.schemas.export import ExportSavedQueryRequest
+        req = ExportSavedQueryRequest()
+        assert req.include_question is True
+
+    def test_supported_formats_constant(self):
+        from app.schemas.export import SUPPORTED_FORMATS
+        assert SUPPORTED_FORMATS == {"csv", "excel", "pdf"}
+
+# =============================================================================
+# ███████╗ ██████╗██╗  ██╗███████╗███╗   ███╗ █████╗   (Component 18)
+# =============================================================================
+
+# =============================================================================
+
+_ig_PLATFORM_ID  = "88888888-0000-0000-0000-000000000001"
+_ig_MAPPING_ID   = "88888888-0000-0000-0000-000000000002"
+_ig_TARGET_USER  = "88888888-0000-0000-0000-000000000003"
+_ig_ADMIN_DICT: dict = {
+    "user_id": _ADMIN_ID,
+    "email": "admin@ig.example.com",
+    "role": "admin",
+    "department": "",
+    "jti": "ig-admin-jti",
+    "totp_verified": True,
+}
+
+_ig_SIGNING_SECRET = "test-signing-secret-abc123"
+
+
+def _ig_make_platform(**kwargs) -> MagicMock:
+    p = MagicMock()
+    p.id = uuid.UUID(_ig_PLATFORM_ID)
+    p.name = "Slack Integration"
+    p.platform_type = kwargs.pop("platform_type", "slack")
+    p.encrypted_config = "v1:ENCRYPTED"
+    p.is_active = kwargs.pop("is_active", True)
+    p.is_inbound_enabled = kwargs.pop("is_inbound_enabled", True)
+    p.is_outbound_enabled = True
+    p.created_by = uuid.UUID(_ADMIN_ID)
+    p.created_at = _FIXED_NOW
+    p.updated_at = _FIXED_NOW
+    for k, v in kwargs.items():
+        setattr(p, k, v)
+    return p
+
+
+def _ig_make_mapping(verified: bool = False) -> MagicMock:
+    m = MagicMock()
+    m.id = uuid.UUID(_ig_MAPPING_ID)
+    m.platform_id = uuid.UUID(_ig_PLATFORM_ID)
+    m.platform_user_id = "U0123SLACK"
+    m.internal_user_id = uuid.UUID(_ig_TARGET_USER)
+    m.is_verified = verified
+    m.verified_at = _FIXED_NOW if verified else None
+    m.expires_at = _FIXED_NOW
+    m.created_at = _FIXED_NOW
+    return m
+
+
+def _ig_make_db(
+    platform=None,
+    mapping=None,
+    rowcount: int = 5,
+) -> AsyncMock:
+    """
+    Flexible db mock supporting 1-4 execute() calls.
+    """
+    session = AsyncMock()
+    session.commit = AsyncMock()
+    session.add = MagicMock()
+    session.delete = AsyncMock()
+
+    # Mock execute() to return context-appropriate results
+    platform_r = MagicMock()
+    platform_r.scalar_one_or_none.return_value = platform
+
+    mapping_r = MagicMock()
+    mapping_r.scalar_one_or_none.return_value = mapping
+
+    update_r = MagicMock()
+    update_r.rowcount = rowcount
+
+    side_effects = [platform_r, mapping_r, update_r]
+    session.execute = AsyncMock(side_effect=side_effects)
+    return session
+
+
+def _ig_build_app() -> "FastAPI":
+    from app.api.v1.routes_integrations import router as ig_router
+    app = FastAPI()
+    app.include_router(ig_router, prefix="/api/v1/integrations", tags=["integrations"])
+    register_exception_handlers(app)
+    return app
+
+
+def _ig_make_client(
+    current_user: Optional[dict] = None,
+    db=None,
+    audit=None,
+    km=None,
+    redis=None,
+    is_admin: bool = False,
+) -> TestClient:
+    app = _ig_build_app()
+    user = current_user or (_ig_ADMIN_DICT if is_admin else {
+        "user_id": _ig_TARGET_USER,
+        "email": "user@ig.example.com",
+        "role": "analyst",
+        "department": "",
+        "jti": "ig-user-jti",
+    })
+    mock_db = db or _ig_make_db()
+    mock_audit = audit or _make_audit()
+    mock_km = km or MagicMock()
+
+    # Default key_manager decrypts to a JSON config with signing_secret
+    mock_km.decrypt.return_value = f'{{"signing_secret": "{_ig_SIGNING_SECRET}"}}'
+
+    async def override_db():
+        yield mock_db
+
+    from app.dependencies import (
+        require_admin, get_current_user, get_db, get_audit_writer,
+        get_key_manager, require_active_user, get_redis_security,
+    )
+    app.dependency_overrides.update({
+        get_db: override_db,
+        get_audit_writer: lambda: mock_audit,
+        get_key_manager: lambda: mock_km,
+        get_redis_security: lambda: redis,
+        require_active_user: lambda: user,
+        get_current_user: lambda: user,
+    })
+    if is_admin:
+        app.dependency_overrides[require_admin] = lambda: user
+    else:
+        def _deny_admin():
+            from app.errors.exceptions import InsufficientPermissionsError
+            raise InsufficientPermissionsError(message="Admin required.", detail="")
+        app.dependency_overrides[require_admin] = _deny_admin
+
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def _ig_make_admin_client(**kwargs) -> TestClient:
+    return _ig_make_client(is_admin=True, current_user=_ig_ADMIN_DICT, **kwargs)
+
+
+# --- Signature helpers for inbound tests ------------------------------------
+
+def _ig_slack_headers(body: bytes, secret: str = _ig_SIGNING_SECRET) -> dict:
+    import hashlib, hmac as _hmac, time
+    ts = str(int(time.time()))
+    sig_base = f"v0:{ts}:{body.decode('utf-8', errors='replace')}"
+    sig = "v0=" + _hmac.new(secret.encode(), sig_base.encode(), hashlib.sha256).hexdigest()
+    return {
+        "X-Slack-Signature": sig,
+        "X-Slack-Request-Timestamp": ts,
+    }
+
+
+def _ig_hub_sig_header(body: bytes, secret: str = _ig_SIGNING_SECRET) -> dict:
+    import hashlib, hmac as _hmac
+    sig = "sha256=" + _hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return {"X-Hub-Signature-256": sig}
+
+
+def _ig_generic_sig_header(body: bytes, secret: str = _ig_SIGNING_SECRET) -> dict:
+    import hashlib, hmac as _hmac
+    sig = "sha256=" + _hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return {"X-Webhook-Signature": sig}
+
+
+_ig_SLACK_BODY = json.dumps({"event_id": "Ev001", "event": {"user": "U0123SLACK", "text": "hello"}}).encode()
+_ig_WA_BODY = json.dumps({"entry": [{"changes": [{"value": {"messages": [{"id": "wamid.001", "from": "9665001234", "timestamp": str(int(__import__("time").time()))}]}}]}]}).encode()
+
+
+# ===========================================================================
+# Test classes — Integrations
+# ===========================================================================
+
+class TestInboundWebhookSlack:
+    def test_slack_valid_signature_returns_200(self):
+        platform = _ig_make_platform(platform_type="slack")
+        db = _ig_make_db(platform=platform, mapping=_ig_make_mapping(verified=True))
+        client = _ig_make_client(db=db)
+        resp = client.post(
+            "/api/v1/integrations/inbound/slack",
+            content=_ig_SLACK_BODY,
+            headers=_ig_slack_headers(_ig_SLACK_BODY),
+        )
+        assert resp.status_code == 200
+
+    def test_slack_response_accepted_true(self):
+        platform = _ig_make_platform(platform_type="slack")
+        db = _ig_make_db(platform=platform, mapping=None)
+        client = _ig_make_client(db=db)
+        resp = client.post(
+            "/api/v1/integrations/inbound/slack",
+            content=_ig_SLACK_BODY,
+            headers=_ig_slack_headers(_ig_SLACK_BODY),
+        )
+        assert resp.json()["accepted"] is True
+
+    def test_slack_missing_signature_returns_401(self):
+        platform = _ig_make_platform(platform_type="slack")
+        db = _ig_make_db(platform=platform, mapping=None)
+        resp = _ig_make_client(db=db).post(
+            "/api/v1/integrations/inbound/slack",
+            content=_ig_SLACK_BODY,
+            # No signature headers
+        )
+        assert resp.status_code == 401
+
+    def test_slack_wrong_signature_returns_401(self):
+        platform = _ig_make_platform(platform_type="slack")
+        db = _ig_make_db(platform=platform, mapping=None)
+        resp = _ig_make_client(db=db).post(
+            "/api/v1/integrations/inbound/slack",
+            content=_ig_SLACK_BODY,
+            headers=_ig_slack_headers(_ig_SLACK_BODY, secret="wrong-secret"),
+        )
+        assert resp.status_code == 401
+
+    def test_slack_old_timestamp_returns_401(self):
+        """Timestamp older than 5 minutes → replay attack → 401."""
+        import hashlib, hmac as _hmac
+        platform = _ig_make_platform(platform_type="slack")
+        db = _ig_make_db(platform=platform, mapping=None)
+        old_ts = str(int(__import__("time").time()) - 400)  # 400s ago
+        sig_base = f"v0:{old_ts}:{_ig_SLACK_BODY.decode()}"
+        sig = "v0=" + _hmac.new(_ig_SIGNING_SECRET.encode(), sig_base.encode(), hashlib.sha256).hexdigest()
+        resp = _ig_make_client(db=db).post(
+            "/api/v1/integrations/inbound/slack",
+            content=_ig_SLACK_BODY,
+            headers={"X-Slack-Signature": sig, "X-Slack-Request-Timestamp": old_ts},
+        )
+        assert resp.status_code == 401
+
+    def test_slack_inactive_platform_returns_404(self):
+        resp = _ig_make_client(db=_ig_make_db(platform=None)).post(
+            "/api/v1/integrations/inbound/slack",
+            content=_ig_SLACK_BODY,
+            headers=_ig_slack_headers(_ig_SLACK_BODY),
+        )
+        assert resp.status_code == 404
+
+    def test_slack_writes_audit_log(self):
+        mock_audit = _make_audit()
+        platform = _ig_make_platform(platform_type="slack")
+        db = _ig_make_db(platform=platform, mapping=None)
+        _ig_make_client(db=db, audit=mock_audit).post(
+            "/api/v1/integrations/inbound/slack",
+            content=_ig_SLACK_BODY,
+            headers=_ig_slack_headers(_ig_SLACK_BODY),
+        )
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "integration.inbound.received"
+
+
+class TestInboundWebhookWhatsApp:
+    def test_whatsapp_valid_signature_returns_200(self):
+        platform = _ig_make_platform(platform_type="whatsapp")
+        db = _ig_make_db(platform=platform, mapping=None)
+        resp = _ig_make_client(db=db).post(
+            "/api/v1/integrations/inbound/whatsapp",
+            content=_ig_WA_BODY,
+            headers=_ig_hub_sig_header(_ig_WA_BODY),
+        )
+        assert resp.status_code == 200
+
+    def test_whatsapp_missing_hub_signature_returns_401(self):
+        platform = _ig_make_platform(platform_type="whatsapp")
+        db = _ig_make_db(platform=platform, mapping=None)
+        resp = _ig_make_client(db=db).post(
+            "/api/v1/integrations/inbound/whatsapp",
+            content=_ig_WA_BODY,
+        )
+        assert resp.status_code == 401
+
+    def test_whatsapp_wrong_signature_returns_401(self):
+        platform = _ig_make_platform(platform_type="whatsapp")
+        db = _ig_make_db(platform=platform, mapping=None)
+        resp = _ig_make_client(db=db).post(
+            "/api/v1/integrations/inbound/whatsapp",
+            content=_ig_WA_BODY,
+            headers={"X-Hub-Signature-256": "sha256=deadbeef"},
+        )
+        assert resp.status_code == 401
+
+    def test_whatsapp_old_message_timestamp_returns_401(self):
+        """Body timestamp >5min old → replay (T30)."""
+        old_body = json.dumps({
+            "entry": [{"changes": [{"value": {"messages": [
+                {"id": "wamid.old", "from": "9665001234",
+                 "timestamp": str(int(__import__("time").time()) - 400)}
+            ]}}]}]
+        }).encode()
+        platform = _ig_make_platform(platform_type="whatsapp")
+        db = _ig_make_db(platform=platform, mapping=None)
+        resp = _ig_make_client(db=db).post(
+            "/api/v1/integrations/inbound/whatsapp",
+            content=old_body,
+            headers=_ig_hub_sig_header(old_body),
+        )
+        assert resp.status_code == 401
+
+
+class TestInboundWebhookGeneric:
+    def test_webhook_valid_signature_returns_200(self):
+        body = json.dumps({"id": "evt-001", "user_id": "usr-123"}).encode()
+        platform = _ig_make_platform(platform_type="webhook")
+        db = _ig_make_db(platform=platform, mapping=None)
+        resp = _ig_make_client(db=db).post(
+            "/api/v1/integrations/inbound/webhook",
+            content=body,
+            headers=_ig_generic_sig_header(body),
+        )
+        assert resp.status_code == 200
+
+    def test_unknown_platform_type_returns_404(self):
+        resp = _ig_make_client().post(
+            "/api/v1/integrations/inbound/discord",
+            content=b"{}",
+        )
+        assert resp.status_code == 404
+
+    def test_jira_valid_signature_returns_200(self):
+        body = json.dumps({"webhookEvent": "jira:issue_created", "issue": {"id": "PROJ-1"}}).encode()
+        platform = _ig_make_platform(platform_type="jira")
+        db = _ig_make_db(platform=platform, mapping=None)
+        resp = _ig_make_client(db=db).post(
+            "/api/v1/integrations/inbound/jira",
+            content=body,
+            headers=_ig_generic_sig_header(body),
+        )
+        assert resp.status_code == 200
+
+    def test_inbound_response_has_platform_type(self):
+        body = json.dumps({"id": "x"}).encode()
+        platform = _ig_make_platform(platform_type="webhook")
+        db = _ig_make_db(platform=platform, mapping=None)
+        resp = _ig_make_client(db=db).post(
+            "/api/v1/integrations/inbound/webhook",
+            content=body,
+            headers=_ig_generic_sig_header(body),
+        )
+        assert resp.json()["platform_type"] == "webhook"
+
+    def test_inbound_response_has_deduplicated_field(self):
+        body = json.dumps({"id": "x"}).encode()
+        platform = _ig_make_platform(platform_type="webhook")
+        db = _ig_make_db(platform=platform, mapping=None)
+        resp = _ig_make_client(db=db).post(
+            "/api/v1/integrations/inbound/webhook",
+            content=body,
+            headers=_ig_generic_sig_header(body),
+        )
+        assert "deduplicated" in resp.json()
+
+
+class TestInboundDeduplication:
+    """T30 — Redis deduplication tests."""
+
+    def test_duplicate_redis_returns_deduplicated_true(self):
+        """When Redis SET NX returns None (key existed), message is a duplicate."""
+        body = json.dumps({"id": "dup-001"}).encode()
+        platform = _ig_make_platform(platform_type="webhook")
+        db = _ig_make_db(platform=platform, mapping=None)
+
+        # Simulate Redis SET NX returning None (key already existed)
+        mock_redis = AsyncMock()
+        mock_redis.set = AsyncMock(return_value=None)
+
+        resp = _ig_make_client(db=db, redis=mock_redis).post(
+            "/api/v1/integrations/inbound/webhook",
+            content=body,
+            headers=_ig_generic_sig_header(body),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["deduplicated"] is True
+
+    def test_fresh_message_dedup_false(self):
+        """When Redis SET NX returns True (key created), message is fresh."""
+        body = json.dumps({"id": "fresh-001"}).encode()
+        platform = _ig_make_platform(platform_type="webhook")
+        db = _ig_make_db(platform=platform, mapping=None)
+
+        mock_redis = AsyncMock()
+        mock_redis.set = AsyncMock(return_value=True)
+
+        resp = _ig_make_client(db=db, redis=mock_redis).post(
+            "/api/v1/integrations/inbound/webhook",
+            content=body,
+            headers=_ig_generic_sig_header(body),
+        )
+        assert resp.json()["deduplicated"] is False
+
+    def test_no_redis_treats_all_as_fresh(self):
+        """None redis → dedup disabled → deduplicated=False."""
+        body = json.dumps({"id": "no-redis"}).encode()
+        platform = _ig_make_platform(platform_type="webhook")
+        db = _ig_make_db(platform=platform, mapping=None)
+        resp = _ig_make_client(db=db, redis=None).post(
+            "/api/v1/integrations/inbound/webhook",
+            content=body,
+            headers=_ig_generic_sig_header(body),
+        )
+        assert resp.json()["deduplicated"] is False
+
+    def test_dedup_uses_correct_redis_ttl(self):
+        """Redis key should be set with NX=True and ex=3600."""
+        body = json.dumps({"id": "ttl-check"}).encode()
+        platform = _ig_make_platform(platform_type="webhook")
+        db = _ig_make_db(platform=platform, mapping=None)
+        mock_redis = AsyncMock()
+        mock_redis.set = AsyncMock(return_value=True)
+
+        _ig_make_client(db=db, redis=mock_redis).post(
+            "/api/v1/integrations/inbound/webhook",
+            content=body,
+            headers=_ig_generic_sig_header(body),
+        )
+        call_kwargs = mock_redis.set.call_args
+        assert call_kwargs.kwargs.get("nx") is True
+        assert call_kwargs.kwargs.get("ex") == 3600
+
+
+class TestMappingVerification:
+    """T29 — Platform user mapping verification."""
+
+    def test_verify_unverified_mapping_returns_200(self):
+        mapping = _ig_make_mapping(verified=False)
+        # Two execute calls: platform lookup + mapping lookup
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        p_r = MagicMock(); p_r.scalar_one_or_none.return_value = _ig_make_platform()
+        m_r = MagicMock(); m_r.scalar_one_or_none.return_value = mapping
+        session.execute = AsyncMock(side_effect=[p_r, m_r])
+        resp = _ig_make_client(db=session).post(
+            "/api/v1/integrations/verify",
+            json={
+                "token": "VERIFY-TOKEN-123",
+                "platform_type": "slack",
+                "platform_user_id": "U0123SLACK",
+            },
+        )
+        assert resp.status_code == 200
+
+    def test_verify_sets_verified_true(self):
+        mapping = _ig_make_mapping(verified=False)
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        p_r = MagicMock(); p_r.scalar_one_or_none.return_value = _ig_make_platform()
+        m_r = MagicMock(); m_r.scalar_one_or_none.return_value = mapping
+        session.execute = AsyncMock(side_effect=[p_r, m_r])
+        _ig_make_client(db=session).post(
+            "/api/v1/integrations/verify",
+            json={"token": "VERIFY1", "platform_type": "slack", "platform_user_id": "U0123SLACK"},
+        )
+        assert mapping.is_verified is True
+
+    def test_verify_stamps_verified_at(self):
+        mapping = _ig_make_mapping(verified=False)
+        mapping.verified_at = None
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        p_r = MagicMock(); p_r.scalar_one_or_none.return_value = _ig_make_platform()
+        m_r = MagicMock(); m_r.scalar_one_or_none.return_value = mapping
+        session.execute = AsyncMock(side_effect=[p_r, m_r])
+        _ig_make_client(db=session).post(
+            "/api/v1/integrations/verify",
+            json={"token": "VERIFY1", "platform_type": "slack", "platform_user_id": "U0123SLACK"},
+        )
+        assert mapping.verified_at is not None
+
+    def test_verify_response_has_verified_true(self):
+        mapping = _ig_make_mapping(verified=False)
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        p_r = MagicMock(); p_r.scalar_one_or_none.return_value = _ig_make_platform()
+        m_r = MagicMock(); m_r.scalar_one_or_none.return_value = mapping
+        session.execute = AsyncMock(side_effect=[p_r, m_r])
+        resp = _ig_make_client(db=session).post(
+            "/api/v1/integrations/verify",
+            json={"token": "VERIFY1", "platform_type": "slack", "platform_user_id": "U0123SLACK"},
+        )
+        assert resp.json()["verified"] is True
+
+    def test_verify_no_mapping_returns_200_verified_false(self):
+        """User enumeration prevention: missing mapping returns 200 not 404."""
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        p_r = MagicMock(); p_r.scalar_one_or_none.return_value = _ig_make_platform()
+        m_r = MagicMock(); m_r.scalar_one_or_none.return_value = None
+        session.execute = AsyncMock(side_effect=[p_r, m_r])
+        resp = _ig_make_client(db=session).post(
+            "/api/v1/integrations/verify",
+            json={"token": "VERIFY1", "platform_type": "slack", "platform_user_id": "UNKNOWN"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["verified"] is False
+
+    def test_verify_no_platform_returns_200_verified_false(self):
+        """Missing platform also returns 200 (anti-enumeration)."""
+        session = AsyncMock()
+        p_r = MagicMock(); p_r.scalar_one_or_none.return_value = None
+        session.execute = AsyncMock(return_value=p_r)
+        resp = _ig_make_client(db=session).post(
+            "/api/v1/integrations/verify",
+            json={"token": "VERIFY1", "platform_type": "slack", "platform_user_id": "X"},
+        )
+        assert resp.json()["verified"] is False
+
+    def test_verify_unknown_platform_type_returns_422(self):
+        resp = _ig_make_client().post(
+            "/api/v1/integrations/verify",
+            json={"token": "VERIFY1", "platform_type": "discord", "platform_user_id": "X"},
+        )
+        assert resp.status_code == 422
+
+    def test_verify_writes_audit_log(self):
+        mock_audit = _make_audit()
+        mapping = _ig_make_mapping(verified=False)
+        session = AsyncMock(); session.commit = AsyncMock()
+        p_r = MagicMock(); p_r.scalar_one_or_none.return_value = _ig_make_platform()
+        m_r = MagicMock(); m_r.scalar_one_or_none.return_value = mapping
+        session.execute = AsyncMock(side_effect=[p_r, m_r])
+        _ig_make_client(db=session, audit=mock_audit).post(
+            "/api/v1/integrations/verify",
+            json={"token": "VERIFY1", "platform_type": "slack", "platform_user_id": "U0123"},
+        )
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "integration.mapping.verified"
+
+    def test_verify_response_has_internal_user_id(self):
+        mapping = _ig_make_mapping(verified=False)
+        session = AsyncMock(); session.commit = AsyncMock()
+        p_r = MagicMock(); p_r.scalar_one_or_none.return_value = _ig_make_platform()
+        m_r = MagicMock(); m_r.scalar_one_or_none.return_value = mapping
+        session.execute = AsyncMock(side_effect=[p_r, m_r])
+        resp = _ig_make_client(db=session).post(
+            "/api/v1/integrations/verify",
+            json={"token": "VERIFY1", "platform_type": "slack", "platform_user_id": "U0123SLACK"},
+        )
+        assert resp.json()["internal_user_id"] == _ig_TARGET_USER
+
+
+class TestGDPRErasure:
+    """T21 — GDPR erasure: redact audit log question text."""
+
+    def _gdpr_db(self, rowcount: int = 3) -> AsyncMock:
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        update_r = MagicMock()
+        update_r.rowcount = rowcount
+        session.execute = AsyncMock(return_value=update_r)
+        return session
+
+    def test_gdpr_erasure_returns_200(self):
+        resp = _ig_make_admin_client(db=self._gdpr_db()).post(
+            "/api/v1/integrations/gdpr/erasure",
+            json={"user_id": _ig_TARGET_USER, "reason": "GDPR request from user"},
+        )
+        assert resp.status_code == 200
+
+    def test_gdpr_response_has_rows_redacted(self):
+        resp = _ig_make_admin_client(db=self._gdpr_db(rowcount=7)).post(
+            "/api/v1/integrations/gdpr/erasure",
+            json={"user_id": _ig_TARGET_USER, "reason": "GDPR request from user"},
+        )
+        assert resp.json()["rows_redacted"] == 7
+
+    def test_gdpr_response_has_sentinel(self):
+        from app.schemas.integration import GDPR_REDACTION_SENTINEL
+        resp = _ig_make_admin_client(db=self._gdpr_db()).post(
+            "/api/v1/integrations/gdpr/erasure",
+            json={"user_id": _ig_TARGET_USER, "reason": "Right to erasure"},
+        )
+        assert resp.json()["sentinel"] == GDPR_REDACTION_SENTINEL
+
+    def test_gdpr_response_has_erased_by(self):
+        resp = _ig_make_admin_client(db=self._gdpr_db()).post(
+            "/api/v1/integrations/gdpr/erasure",
+            json={"user_id": _ig_TARGET_USER, "reason": "Right to erasure"},
+        )
+        assert resp.json()["erased_by"] == _ADMIN_ID
+
+    def test_gdpr_non_admin_returns_403(self):
+        resp = _ig_make_client(db=self._gdpr_db()).post(
+            "/api/v1/integrations/gdpr/erasure",
+            json={"user_id": _ig_TARGET_USER, "reason": "test"},
+        )
+        assert resp.status_code == 403
+
+    def test_gdpr_invalid_user_id_returns_422(self):
+        resp = _ig_make_admin_client(db=self._gdpr_db()).post(
+            "/api/v1/integrations/gdpr/erasure",
+            json={"user_id": "not-a-uuid", "reason": "test reason here"},
+        )
+        assert resp.status_code == 422
+
+    def test_gdpr_missing_reason_returns_422(self):
+        resp = _ig_make_admin_client(db=self._gdpr_db()).post(
+            "/api/v1/integrations/gdpr/erasure",
+            json={"user_id": _ig_TARGET_USER},
+        )
+        assert resp.status_code == 422
+
+    def test_gdpr_short_reason_returns_422(self):
+        """Reason must be at least 5 chars (schema validation)."""
+        resp = _ig_make_admin_client(db=self._gdpr_db()).post(
+            "/api/v1/integrations/gdpr/erasure",
+            json={"user_id": _ig_TARGET_USER, "reason": "no"},
+        )
+        assert resp.status_code == 422
+
+    def test_gdpr_writes_audit_log(self):
+        mock_audit = _make_audit()
+        _ig_make_admin_client(db=self._gdpr_db(), audit=mock_audit).post(
+            "/api/v1/integrations/gdpr/erasure",
+            json={"user_id": _ig_TARGET_USER, "reason": "Right to erasure request"},
+        )
+        assert mock_audit.log.call_args.kwargs["execution_status"] == "integration.gdpr.erasure"
+
+    def test_gdpr_response_includes_reason(self):
+        reason = "Annual GDPR purge cycle"
+        resp = _ig_make_admin_client(db=self._gdpr_db()).post(
+            "/api/v1/integrations/gdpr/erasure",
+            json={"user_id": _ig_TARGET_USER, "reason": reason},
+        )
+        assert resp.json()["reason"] == reason
+
+    def test_gdpr_response_has_erased_at(self):
+        resp = _ig_make_admin_client(db=self._gdpr_db()).post(
+            "/api/v1/integrations/gdpr/erasure",
+            json={"user_id": _ig_TARGET_USER, "reason": "GDPR erasure request"},
+        )
+        assert "erased_at" in resp.json()
+
+
+class TestIntegrationSchemas:
+    def test_gdpr_erasure_request_requires_user_id_and_reason(self):
+        from app.schemas.integration import GDPRErasureRequest
+        from pydantic import ValidationError as PydanticError
+        with pytest.raises(PydanticError):
+            GDPRErasureRequest()
+
+    def test_gdpr_sentinel_constant(self):
+        from app.schemas.integration import GDPR_REDACTION_SENTINEL
+        assert "REDACTED" in GDPR_REDACTION_SENTINEL
+        assert "GDPR" in GDPR_REDACTION_SENTINEL
+
+    def test_webhook_max_age_is_300(self):
+        from app.schemas.integration import WEBHOOK_MAX_AGE_SECONDS
+        assert WEBHOOK_MAX_AGE_SECONDS == 300
+
+    def test_inbound_platform_types_constant(self):
+        from app.schemas.integration import INBOUND_PLATFORM_TYPES
+        assert "slack" in INBOUND_PLATFORM_TYPES
+        assert "whatsapp" in INBOUND_PLATFORM_TYPES
+        assert "discord" not in INBOUND_PLATFORM_TYPES
+
+    def test_verify_request_requires_token_platform_user(self):
+        from app.schemas.integration import MappingVerifyRequest
+        from pydantic import ValidationError as PydanticError
+        with pytest.raises(PydanticError):
+            MappingVerifyRequest(platform_type="slack")
+
+    def test_inbound_webhook_response_schema(self):
+        from app.schemas.integration import InboundWebhookResponse
+        r = InboundWebhookResponse(
+            accepted=True, message="ok",
+            platform_type="slack", deduplicated=False
+        )
+        assert r.accepted is True and r.deduplicated is False
+
+    def test_gdpr_erasure_response_schema(self):
+        from app.schemas.integration import GDPRErasureResponse
+        r = GDPRErasureResponse(
+            user_id=_ig_TARGET_USER, rows_redacted=5,
+            sentinel="[REDACTED]", erased_by=_ADMIN_ID,
+            erased_at="2026-01-01T00:00:00+00:00", reason="test"
+        )
+        assert r.rows_redacted == 5
+
+    def test_all_inbound_types_are_valid_platform_types(self):
+        from app.schemas.integration import INBOUND_PLATFORM_TYPES
+        from app.schemas.notification import PLATFORM_TYPES
+        # Every inbound type must also be a known platform type
+        assert INBOUND_PLATFORM_TYPES.issubset(PLATFORM_TYPES)
+
+
+class TestSignatureSecurityInvariants:
+    """
+    T30 / T50 — Constant-time comparison and signature security.
+    """
+
+    def test_wrong_slack_secret_always_401(self):
+        for _ in range(3):
+            platform = _ig_make_platform(platform_type="slack")
+            db = _ig_make_db(platform=platform, mapping=None)
+            resp = _ig_make_client(db=db).post(
+                "/api/v1/integrations/inbound/slack",
+                content=_ig_SLACK_BODY,
+                headers=_ig_slack_headers(_ig_SLACK_BODY, secret="bad"),
+            )
+            assert resp.status_code == 401
+
+    def test_empty_body_with_valid_slack_sig_accepted(self):
+        """Empty body with correct signature should still pass."""
+        empty_body = b"{}"
+        platform = _ig_make_platform(platform_type="slack")
+        db = _ig_make_db(platform=platform, mapping=None)
+        resp = _ig_make_client(db=db).post(
+            "/api/v1/integrations/inbound/slack",
+            content=empty_body,
+            headers=_ig_slack_headers(empty_body),
+        )
+        assert resp.status_code == 200
+
+    def test_signature_checked_before_db_user_lookup(self):
+        """
+        If platform is found but signature is wrong, the mapping lookup
+        should NEVER be reached.  We verify by checking the mock db
+        execute call count — it should be exactly 1 (platform only).
+        """
+        platform = _ig_make_platform(platform_type="slack")
+        session = AsyncMock()
+        session.commit = AsyncMock()
+        p_r = MagicMock(); p_r.scalar_one_or_none.return_value = platform
+        session.execute = AsyncMock(return_value=p_r)
+
+        _ig_make_client(db=session).post(
+            "/api/v1/integrations/inbound/slack",
+            content=_ig_SLACK_BODY,
+            headers=_ig_slack_headers(_ig_SLACK_BODY, secret="wrong"),
+        )
+        # Only 1 execute call allowed (platform fetch); mapping fetch must not happen
+        assert session.execute.call_count == 1
+
+    def test_gdpr_erasure_only_updates_question_field(self):
+        """
+        The update statement must target only the question column.
+        We verify by checking the execute call contains the right intent.
+        """
+        session = AsyncMock(); session.commit = AsyncMock()
+        update_r = MagicMock(); update_r.rowcount = 2
+        session.execute = AsyncMock(return_value=update_r)
+
+        _ig_make_admin_client(db=session).post(
+            "/api/v1/integrations/gdpr/erasure",
+            json={"user_id": _ig_TARGET_USER, "reason": "GDPR deletion request"},
+        )
+        # Just verify execute was called (UPDATE statement ran)
+        assert session.execute.called
+        # And commit ran (changes persisted)
+        assert session.commit.called

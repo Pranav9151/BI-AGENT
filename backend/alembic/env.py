@@ -6,25 +6,21 @@ Async migration support with SQLAlchemy model autodiscovery.
 import asyncio
 import os
 import sys
+import urllib.parse
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import pool
-from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.engine import Connection, URL
+from sqlalchemy.ext.asyncio import create_async_engine
 
 # Add backend to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 # Import ALL models so autogenerate can detect them
-from app.models import Base  # noqa: E402 — imports all models via __init__
+from app.models import Base  # noqa: E402
 
 config = context.config
-
-# Load DATABASE_URL from environment
-database_url = os.environ.get("DATABASE_URL", "")
-if database_url:
-    config.set_main_option("sqlalchemy.url", database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -32,11 +28,36 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def _build_engine_url() -> URL:
+    """
+    Build a SQLAlchemy URL object with the password decoded from raw env/ini.
+
+    We parse the URL string manually with urllib.parse and use URL.create()
+    so the password is NEVER percent-encoded when passed to asyncpg.
+    This avoids two separate failure modes:
+      1. configparser treating '%' as an interpolation character.
+      2. asyncpg receiving 'Pass%40123' instead of 'Pass@123'.
+    """
+    raw = os.environ.get("DATABASE_URL") or config.get_main_option("sqlalchemy.url", "")
+    parsed = urllib.parse.urlparse(raw)
+
+    return URL.create(
+        drivername=parsed.scheme,                         # postgresql+asyncpg
+        username=urllib.parse.unquote(parsed.username or ""),
+        password=urllib.parse.unquote(parsed.password or ""),  # Pass@123 decoded
+        host=parsed.hostname or "localhost",
+        port=parsed.port or 5432,
+        database=(parsed.path or "").lstrip("/"),
+    )
+
+
+_ENGINE_URL = _build_engine_url()
+
+
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode — generates SQL script."""
-    url = config.get_main_option("sqlalchemy.url")
+    """Run migrations in 'offline' mode - generates SQL without a live connection."""
     context.configure(
-        url=url,
+        url=_ENGINE_URL,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -53,11 +74,7 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     """Run migrations in 'online' mode with async engine."""
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    connectable = create_async_engine(_ENGINE_URL, poolclass=pool.NullPool)
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
     await connectable.dispose()

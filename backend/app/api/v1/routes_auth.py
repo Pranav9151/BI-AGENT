@@ -539,7 +539,7 @@ async def refresh(
 # POST /logout
 # =============================================================================
 
-@router.post("/logout", status_code=204)
+@router.post("/logout", status_code=200)
 async def logout(
     request: Request,
     response: Response,

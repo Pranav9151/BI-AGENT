@@ -179,7 +179,6 @@ def _build_processors(json_output: bool) -> list:
     shared: list = [
         merge_contextvars,                        # inject request_id, user_id etc.
         structlog.stdlib.add_log_level,           # add "level" key
-        structlog.stdlib.add_logger_name,         # add "logger" key
         structlog.processors.TimeStamper(fmt="iso", utc=True),  # UTC ISO timestamp
         redact_sensitive_fields,                  # T33 — must run BEFORE injection check
         prevent_log_injection,                    # T34 — must run AFTER redaction

@@ -3,7 +3,6 @@ name = "smart-bi-agent"
 version = "3.1.0"
 description = "AI-powered Business Intelligence platform — Natural Language to SQL"
 requires-python = ">=3.12"
-license = {text = "Proprietary"}
 authors = [
     {name = "Waqar", email = "waqar@smartbiagent.com"},
 ]
@@ -32,7 +31,6 @@ dependencies = [
 
     # === Auth & Crypto ===
     "python-jose[cryptography]==3.3.0",
-    "passlib[bcrypt]==1.7.4",
     "bcrypt==4.2.1",
     "cryptography==44.0.0",
     "pyotp==2.9.0",
@@ -96,8 +94,12 @@ test = [
 ]
 
 [build-system]
-requires = ["setuptools>=75.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+requires = ["setuptools>=75.0,<82", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["alembic*", "tests*", "scripts*"]
 
 # =============================================================================
 # Tool Configuration

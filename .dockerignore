@@ -1,0 +1,29 @@
+# Dependencies — installed inside container
+frontend/node_modules
+frontend/dist
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+*.egg-info
+
+# Secrets
+.env
+keys/*.pem
+
+# IDE / OS
+.vscode
+.idea
+.git
+.DS_Store
+*.swp
+
+# Testing
+htmlcov
+.coverage
+.pytest_cache
+.mypy_cache
+.ruff_cache

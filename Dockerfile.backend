@@ -24,8 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # --- Development stage ---
 FROM base AS development
 
-COPY backend/pyproject.toml /app/pyproject.toml
-RUN pip install -e ".[dev]" --break-system-packages 2>/dev/null || pip install -e ".[dev]"
+COPY pyproject.toml /app/pyproject.toml
+COPY backend/ /app/
+RUN pip install --upgrade pip "setuptools>=75,<82" wheel && pip install -e ".[dev]" --break-system-packages 2>/dev/null || pip install -e ".[dev]"
 
 # Source mounted as volume in dev
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
@@ -36,7 +37,7 @@ FROM base AS deps
 COPY pyproject.toml /app/pyproject.toml
 COPY backend/ /app/
 
-RUN pip install . --break-system-packages 2>/dev/null || pip install .
+RUN pip install --upgrade pip "setuptools>=75,<82" wheel && pip install . --break-system-packages 2>/dev/null || pip install .
 
 # --- Production stage ---
 FROM python:3.12-slim AS production
@@ -61,8 +62,9 @@ COPY --from=deps /usr/local/bin /usr/local/bin
 
 # Copy application code
 COPY backend/app /app/app
+COPY backend/scripts /app/scripts
 COPY backend/alembic /app/alembic
-COPY backend/alembic/alembic.ini /app/alembic.ini
+COPY backend/alembic.ini /app/alembic.ini
 
 # Ensure proper ownership
 RUN chown -R sbi:sbi /app

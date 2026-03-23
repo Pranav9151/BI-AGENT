@@ -11,7 +11,7 @@ services:
       - APP_ENV=development
     volumes:
       - ./backend:/app:cached
-      - jwt_keys:/app/keys
+      - ./keys:/app/keys
     ports:
       - "8000:8000"  # Direct backend access for debugging
     command: >

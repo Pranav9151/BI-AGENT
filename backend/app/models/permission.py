@@ -1,6 +1,7 @@
 """Smart BI Agent — Permission Models (3-tier RBAC) (v3.1)"""
 from __future__ import annotations
 import uuid
+from datetime import datetime
 from sqlalchemy import DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -12,7 +13,7 @@ class RolePermission(Base, UUIDPrimaryKeyMixin):
     connection_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("connections.id", ondelete="CASCADE"), nullable=False)
     allowed_tables: Mapped[list] = mapped_column(ARRAY(Text), default=[])
     denied_columns: Mapped[list] = mapped_column(ARRAY(Text), default=[])
-    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 class DepartmentPermission(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "department_permissions"
@@ -20,7 +21,7 @@ class DepartmentPermission(Base, UUIDPrimaryKeyMixin):
     connection_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("connections.id", ondelete="CASCADE"), nullable=False)
     allowed_tables: Mapped[list] = mapped_column(ARRAY(Text), default=[])
     denied_columns: Mapped[list] = mapped_column(ARRAY(Text), default=[])
-    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 class UserPermission(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "user_permissions"
@@ -29,4 +30,4 @@ class UserPermission(Base, UUIDPrimaryKeyMixin):
     allowed_tables: Mapped[list] = mapped_column(ARRAY(Text), default=[])
     denied_tables: Mapped[list] = mapped_column(ARRAY(Text), default=[])
     denied_columns: Mapped[list] = mapped_column(ARRAY(Text), default=[])
-    created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

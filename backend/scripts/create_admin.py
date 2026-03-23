@@ -94,7 +94,8 @@ async def create_admin() -> None:
     from app.security.key_manager import init_key_manager
     km = init_key_manager(settings.ENCRYPTION_MASTER_KEY)
 
-    from app.db.session import init_db_engine, _async_session_factory
+    from app.db.session import init_db_engine
+    import app.db.session as db_session
     init_db_engine()
 
     # ------------------------------------------------------------------
@@ -103,7 +104,7 @@ async def create_admin() -> None:
     from sqlalchemy import select
     from app.models.user import User
 
-    async with _async_session_factory() as session:
+    async with db_session._async_session_factory() as session:
         result = await session.execute(
             select(User).where(User.email == email)
         )

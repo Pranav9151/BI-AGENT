@@ -1,9 +1,13 @@
 /**
  * Smart BI Agent — Saved Queries Page
- * Phase 4D | All authenticated users (ownership enforced by backend)
+ * Phase 5 | Session 1 — Added Re-run + Export
  *
- * Library of saved queries with sensitivity badges, pin/share toggles,
- * SQL preview, and re-run support.
+ * Features:
+ *   - Card grid with sensitivity badges, pin/share toggles
+ *   - SQL detail modal (Monaco preview)
+ *   - Re-run: execute saved query through full pipeline → results modal
+ *   - Export: CSV/Excel/PDF from re-run results
+ *   - Search by name, question, or tag
  */
 
 import { useState } from "react";
@@ -23,13 +27,24 @@ import {
   Shield,
   ShieldAlert,
   ShieldCheck,
+  Play,
+  Table2,
+  BarChart3,
+  Clock,
+  Cpu,
+  Code2,
+  Download,
+  FileSpreadsheet,
+  FileText,
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { api, ApiRequestError } from "@/lib/api";
+import { api, ApiRequestError, triggerBlobDownload } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button, Card, Alert, Input } from "@/components/ui";
+import { ResultsTable, AutoChart } from "@/components/QueryResults";
 import type { SavedQuery, SavedQueryListResponse } from "@/types/saved-queries";
+import type { QueryRequest, QueryResponse } from "@/types/query";
 
 // ─── Sensitivity Badges ─────────────────────────────────────────────────────
 
@@ -50,6 +65,31 @@ const sensitivityConfig: Record<string, { label: string; icon: React.ReactNode; 
     color: "text-red-400 bg-red-500/10 border-red-500/20",
   },
 };
+
+// ─── Export Handler (shared) ────────────────────────────────────────────────
+
+async function handleExport(
+  format: "csv" | "excel" | "pdf",
+  result: QueryResponse,
+) {
+  const rowArrays = result.rows.map((row) =>
+    result.columns.map((col) => {
+      const val = row[col];
+      return val === null || val === undefined ? null : val;
+    })
+  );
+
+  const { blob, filename } = await api.downloadBlob("/export/", {
+    columns: result.columns,
+    rows: rowArrays,
+    format,
+    sensitivity: "normal",
+    filename: result.question.slice(0, 60).replace(/[^a-zA-Z0-9\s\-_]/g, ""),
+    title: result.question,
+  });
+
+  triggerBlobDownload(blob, filename);
+}
 
 // ─── Detail Modal ───────────────────────────────────────────────────────────
 
@@ -133,6 +173,148 @@ function QueryDetailModal({
   );
 }
 
+// ─── Re-run Results Modal ───────────────────────────────────────────────────
+
+function RerunResultsModal({
+  query,
+  result,
+  onClose,
+}: {
+  query: SavedQuery;
+  result: QueryResponse;
+  onClose: () => void;
+}) {
+  const [tab, setTab] = useState<"table" | "chart" | "sql">("table");
+  const [exportingFmt, setExportingFmt] = useState<string | null>(null);
+
+  const doExport = async (format: "csv" | "excel" | "pdf") => {
+    setExportingFmt(format);
+    try {
+      await handleExport(format, result);
+      toast.success(`Exported as ${format.toUpperCase()}`);
+    } catch (err) {
+      const msg = err instanceof ApiRequestError ? err.message : "Export failed";
+      toast.error(msg);
+    } finally {
+      setExportingFmt(null);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative w-full max-w-5xl max-h-[90vh] flex flex-col bg-slate-800 border border-slate-700/60 rounded-2xl shadow-2xl">
+        {/* Header */}
+        <div className="shrink-0 flex items-start justify-between p-5 border-b border-slate-700/40">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <Play className="h-4 w-4 text-emerald-400" />
+              <h2 className="text-base font-semibold text-white truncate">{query.name}</h2>
+            </div>
+            <p className="text-sm text-slate-400 mt-0.5 truncate">{query.question}</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-white p-1">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Metadata bar */}
+        <div className="shrink-0 flex items-center gap-4 px-5 pt-3 text-[11px] text-slate-500">
+          <span className="flex items-center gap-1 font-medium text-slate-400">
+            <Table2 className="h-3 w-3" />{result.row_count} row{result.row_count !== 1 ? "s" : ""}
+            {result.truncated && <span className="text-amber-400 ml-0.5">(truncated)</span>}
+          </span>
+          <span className="flex items-center gap-1"><Clock className="h-3 w-3" />Query {result.duration_ms}ms</span>
+          <span className="flex items-center gap-1"><Cpu className="h-3 w-3" />LLM {result.llm_latency_ms}ms</span>
+          <span className="text-slate-600">{result.model}</span>
+        </div>
+
+        {/* Tabs */}
+        <div className="shrink-0 flex items-center justify-between px-5 pt-2 border-b border-slate-700/40">
+          <div className="flex">
+            {([
+              { id: "table" as const, label: "Results", icon: <Table2 className="h-3.5 w-3.5" /> },
+              { id: "chart" as const, label: "Chart", icon: <BarChart3 className="h-3.5 w-3.5" /> },
+              { id: "sql" as const, label: "SQL", icon: <Code2 className="h-3.5 w-3.5" /> },
+            ]).map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={cn(
+                  "flex items-center gap-1.5 px-4 py-2.5 text-xs font-medium border-b-2 -mb-px transition-all",
+                  tab === t.id ? "border-blue-500 text-blue-400" : "border-transparent text-slate-500 hover:text-slate-300",
+                )}
+              >
+                {t.icon}{t.label}
+              </button>
+            ))}
+          </div>
+          {/* Export buttons */}
+          <div className="flex items-center gap-1">
+            <span className="text-[10px] text-slate-600 mr-1.5">Export</span>
+            {([
+              { fmt: "csv" as const, label: "CSV", icon: <Download className="h-3 w-3" /> },
+              { fmt: "excel" as const, label: "Excel", icon: <FileSpreadsheet className="h-3 w-3" /> },
+              { fmt: "pdf" as const, label: "PDF", icon: <FileText className="h-3 w-3" /> },
+            ]).map(({ fmt, label, icon }) => (
+              <button
+                key={fmt}
+                onClick={() => doExport(fmt)}
+                disabled={exportingFmt !== null}
+                className={cn(
+                  "flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all",
+                  "bg-slate-700/40 text-slate-400 hover:bg-slate-700/70 hover:text-slate-200",
+                  "disabled:opacity-40 disabled:cursor-not-allowed",
+                )}
+              >
+                {exportingFmt === fmt ? <Loader2 className="h-3 w-3 animate-spin" /> : icon}
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 min-h-0 overflow-hidden">
+          {tab === "table" && <ResultsTable columns={result.columns} rows={result.rows} />}
+          {tab === "chart" && (
+            <div className="p-4 overflow-y-auto max-h-[60vh]">
+              <AutoChart columns={result.columns} rows={result.rows} />
+            </div>
+          )}
+          {tab === "sql" && (
+            <div className="h-[300px]">
+              <Editor
+                height="100%"
+                defaultLanguage="sql"
+                value={result.sql}
+                theme="vs-dark"
+                options={{
+                  readOnly: true,
+                  minimap: { enabled: false },
+                  fontSize: 13,
+                  lineNumbers: "on",
+                  scrollBeyondLastLine: false,
+                  wordWrap: "on",
+                  padding: { top: 16, bottom: 16 },
+                  renderLineHighlight: "none",
+                  overviewRulerBorder: false,
+                  hideCursorInOverviewRuler: true,
+                  scrollbar: { vertical: "hidden", horizontal: "auto", useShadows: false },
+                }}
+                onMount={(editor) => {
+                  const domNode = editor.getDomNode();
+                  if (domNode) domNode.style.background = "transparent";
+                }}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 export default function SavedQueriesPage() {
@@ -140,6 +322,9 @@ export default function SavedQueriesPage() {
   const [search, setSearch] = useState("");
   const [selectedQuery, setSelectedQuery] = useState<SavedQuery | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [runningId, setRunningId] = useState<string | null>(null);
+  const [rerunQuery, setRerunQuery] = useState<SavedQuery | null>(null);
+  const [rerunResult, setRerunResult] = useState<QueryResponse | null>(null);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["saved-queries"],
@@ -185,6 +370,27 @@ export default function SavedQueriesPage() {
       setDeletingId(null);
     },
   });
+
+  // ── Re-run: execute through full query pipeline (T43 — fresh permission check)
+  const handleRerun = async (sq: SavedQuery) => {
+    setRunningId(sq.query_id);
+    try {
+      const body: QueryRequest = {
+        question: sq.question,
+        connection_id: sq.connection_id,
+      };
+      const result = await api.post<QueryResponse>("/query/", body);
+      setRerunQuery(sq);
+      setRerunResult(result);
+      // Refresh list to update run_count / last_run_at
+      queryClient.invalidateQueries({ queryKey: ["saved-queries"] });
+    } catch (err) {
+      const msg = err instanceof ApiRequestError ? err.message : "Re-run failed";
+      toast.error(msg);
+    } finally {
+      setRunningId(null);
+    }
+  };
 
   const queries = data?.queries ?? [];
   const filtered = search
@@ -269,10 +475,11 @@ export default function SavedQueriesPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {sorted.map((q) => {
             const cfg = sensitivityConfig[q.sensitivity] ?? sensitivityConfig.normal;
+            const isRunning = runningId === q.query_id;
             return (
               <Card
                 key={q.query_id}
-                className="p-4 hover:border-slate-600/80 transition-colors cursor-pointer"
+                className="p-4 hover:border-slate-600/80 transition-colors"
               >
                 {/* Top row: name + badges */}
                 <div className="flex items-start justify-between mb-2">
@@ -306,6 +513,23 @@ export default function SavedQueriesPage() {
                     )}
                   </div>
                   <div className="flex items-center gap-0.5">
+                    {/* Re-run button */}
+                    <button
+                      onClick={() => handleRerun(q)}
+                      disabled={isRunning || runningId !== null}
+                      className={cn(
+                        "p-1.5 rounded transition-colors",
+                        "text-emerald-400 hover:bg-emerald-500/10",
+                        "disabled:opacity-40 disabled:cursor-not-allowed",
+                      )}
+                      title="Re-run query"
+                    >
+                      {isRunning ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Play className="h-3.5 w-3.5" />
+                      )}
+                    </button>
                     <button
                       onClick={() => setSelectedQuery(q)}
                       className="p-1.5 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-700/50 transition-colors"
@@ -388,6 +612,18 @@ export default function SavedQueriesPage() {
         <QueryDetailModal
           query={selectedQuery}
           onClose={() => setSelectedQuery(null)}
+        />
+      )}
+
+      {/* Re-run Results Modal */}
+      {rerunQuery && rerunResult && (
+        <RerunResultsModal
+          query={rerunQuery}
+          result={rerunResult}
+          onClose={() => {
+            setRerunQuery(null);
+            setRerunResult(null);
+          }}
         />
       )}
     </div>

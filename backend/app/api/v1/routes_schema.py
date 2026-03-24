@@ -46,6 +46,7 @@ from app.dependencies import (
     CurrentUser,
     get_audit_writer,
     get_db,
+    get_key_manager,
     get_redis_cache,
     require_admin,
     require_analyst_or_above,
@@ -208,15 +209,13 @@ def _filter_schema(
     return filtered
 
 
-async def _introspect_schema(conn: Connection) -> dict[str, Any]:
+async def _introspect_schema(conn: Connection, key_manager) -> dict[str, Any]:
     """
-    Stub for DB schema introspection.
-
-    Phase 3 will wire this to schema_reader.py (multi-DB adapters).
-    Returns a raw schema dict: {table_name: {columns: {col_name: {type: ...}}}}
+    DB schema introspection via shared service.
+    Routes to the correct adapter by db_type.
     """
-    # Stub: return empty schema — real implementation in Phase 3
-    return {}
+    from app.services.schema_reader import introspect_schema
+    return await introspect_schema(conn, key_manager)
 
 
 # =============================================================================
@@ -234,6 +233,7 @@ async def get_schema(
     current_user: CurrentUser = Depends(require_analyst_or_above),
     db: AsyncSession = Depends(get_db),
     redis=Depends(get_redis_cache),
+    key_manager=Depends(get_key_manager),
 ) -> SchemaResponse:
     """
     Returns the sanitized, permission-filtered schema for a connection.
@@ -283,7 +283,7 @@ async def get_schema(
         except Exception:
             pass
 
-    raw_schema = await _introspect_schema(conn)
+    raw_schema = await _introspect_schema(conn, key_manager)
 
     # 5. Filter + sanitize
     schema_data = _filter_schema(

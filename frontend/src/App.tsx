@@ -23,6 +23,7 @@ import LLMProvidersPage from "@/pages/LLMProvidersPage";
 import LLMProviderFormPage from "@/pages/LLMProviderFormPage";
 import QueryPage from "@/pages/QueryPage";
 import SavedQueriesPage from "@/pages/SavedQueriesPage";
+import SchemaPage from "@/pages/SchemaPage";
 import AdminPage from "@/pages/AdminPage";
 
 // ─── Auth Initializer ────────────────────────────────────────────────────────
@@ -75,6 +76,9 @@ export default function App() {
 
               {/* Phase 4D — Saved Queries (ownership enforced by backend) */}
               <Route path="saved-queries" element={<SavedQueriesPage />} />
+
+              {/* Phase 5 — Schema Browser (analyst+ enforced by backend) */}
+              <Route path="schema-browser" element={<SchemaPage />} />
 
               {/* Phase 4E — Admin Panel (admin only enforced by backend) */}
               <Route path="admin" element={<AdminPage />} />

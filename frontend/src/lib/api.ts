@@ -130,6 +130,74 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// ─── Binary Download ────────────────────────────────────────────────────────
+
+interface DownloadResult {
+  blob: Blob;
+  filename: string;
+}
+
+async function downloadBlob(
+  path: string,
+  body?: unknown,
+  skipRetry = false,
+): Promise<DownloadResult> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "*/*",
+  };
+
+  const token = _getToken?.() ?? null;
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    credentials: "include",
+  });
+
+  // 401 interception — same retry logic as request()
+  if (res.status === 401 && !skipRetry && _refreshFn) {
+    const refreshed = await _refreshFn();
+    if (refreshed) {
+      return downloadBlob(path, body, true);
+    }
+    _logoutFn?.();
+    const errBody = await parseErrorBody(res);
+    throw new ApiRequestError(res.status, errBody);
+  }
+
+  if (!res.ok) {
+    const errBody = await parseErrorBody(res);
+    throw new ApiRequestError(res.status, errBody);
+  }
+
+  const blob = await res.blob();
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const match = disposition.match(/filename="?([^";\n]+)"?/);
+  const filename = match?.[1] ?? "export";
+
+  return { blob, filename };
+}
+
+/**
+ * Trigger a browser file download from a Blob.
+ * Creates a temporary <a> element, clicks it, and cleans up.
+ */
+export function triggerBlobDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 // ─── Convenience Methods ─────────────────────────────────────────────────────
 
 export const api = {
@@ -144,4 +212,7 @@ export const api = {
 
   delete: <T>(path: string, opts?: Omit<RequestOptions, "method" | "body">) =>
     request<T>(path, { ...opts, method: "DELETE" }),
+
+  /** POST a JSON body, receive a binary blob response (for file exports). */
+  downloadBlob: (path: string, body?: unknown) => downloadBlob(path, body),
 };

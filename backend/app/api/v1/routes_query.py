@@ -40,7 +40,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.query_executor import execute_query_postgres
+from app.db.executor_factory import execute_query, get_dialect
 from app.dependencies import (
     CurrentUser,
     get_audit_writer,
@@ -60,7 +60,6 @@ from app.llm import LLMRequest, generate_with_fallback
 from app.logging.structured import get_logger
 from app.models.connection import Connection
 from app.models.conversation import Conversation, ConversationMessage
-from app.security.key_manager import KeyPurpose
 from app.security.prompt_guard import (
     detect_injection,
     sanitize_conversation_history,
@@ -220,7 +219,8 @@ async def _load_schema_for_query(
             pass
 
     # No cache — introspect with real DB connection
-    schema_data = await _introspect_postgres(conn, key_manager)
+    from app.services.schema_reader import introspect_schema
+    schema_data = await introspect_schema(conn, key_manager)
 
     # Load permissions and filter
     perms = await _load_user_permissions(user_id, role, department, connection_id, db)
@@ -234,119 +234,6 @@ async def _load_schema_for_query(
             pass
 
     return filtered
-
-
-async def _introspect_postgres(conn: Connection, key_manager) -> dict:
-    """
-    Introspect PostgreSQL schema via information_schema using asyncpg.
-
-    Connects to the user's target database with their decrypted credentials,
-    reads all tables and columns from allowed schemas, and returns a
-    structured schema dict for the LLM prompt.
-
-    Returns:
-        {table_name: {columns: {col_name: {type, nullable, primary_key}}}}
-    """
-    import asyncpg as apg
-
-    # Decrypt connection credentials
-    try:
-        creds = json.loads(
-            key_manager.decrypt(conn.encrypted_credentials, KeyPurpose.DB_CREDENTIALS)
-        )
-    except Exception as exc:
-        log.error("introspect.decrypt_failed", connection_id=str(conn.id), error=str(exc))
-        return {}
-
-    # Build SSL context
-    ssl_ctx = False if conn.ssl_mode == "disable" else ("require" if conn.ssl_mode in ("require", "verify-ca", "verify-full") else None)
-
-    db_conn = None
-    try:
-        db_conn = await apg.connect(
-            host=conn.host,
-            port=conn.port,
-            database=conn.database_name,
-            user=creds["username"],
-            password=creds["password"],
-            ssl=ssl_ctx,
-            timeout=10,
-        )
-
-        # Get allowed schemas (default to public)
-        schemas = conn.allowed_schemas or ["public"]
-        schema_placeholders = ", ".join(f"${i+1}" for i in range(len(schemas)))
-
-        # Query all tables
-        tables_sql = f"""
-            SELECT table_schema, table_name
-            FROM information_schema.tables
-            WHERE table_schema IN ({schema_placeholders})
-              AND table_type = 'BASE TABLE'
-            ORDER BY table_schema, table_name
-        """
-        tables = await db_conn.fetch(tables_sql, *schemas)
-
-        if not tables:
-            log.info("introspect.no_tables", connection_id=str(conn.id), schemas=schemas)
-            return {}
-
-        # Query all columns for those tables
-        columns_sql = f"""
-            SELECT
-                c.table_name,
-                c.column_name,
-                c.data_type,
-                c.is_nullable,
-                CASE WHEN kcu.column_name IS NOT NULL THEN true ELSE false END AS is_primary_key
-            FROM information_schema.columns c
-            LEFT JOIN information_schema.table_constraints tc
-                ON tc.table_schema = c.table_schema
-                AND tc.table_name = c.table_name
-                AND tc.constraint_type = 'PRIMARY KEY'
-            LEFT JOIN information_schema.key_column_usage kcu
-                ON kcu.constraint_name = tc.constraint_name
-                AND kcu.table_schema = tc.table_schema
-                AND kcu.column_name = c.column_name
-            WHERE c.table_schema IN ({schema_placeholders})
-            ORDER BY c.table_name, c.ordinal_position
-        """
-        columns = await db_conn.fetch(columns_sql, *schemas)
-
-        # Build schema dict
-        schema_data: dict = {}
-        for table in tables:
-            table_name = table["table_name"]
-            schema_data[table_name] = {"columns": {}}
-
-        for col in columns:
-            table_name = col["table_name"]
-            if table_name in schema_data:
-                schema_data[table_name]["columns"][col["column_name"]] = {
-                    "type": col["data_type"],
-                    "nullable": col["is_nullable"] == "YES",
-                    "primary_key": col["is_primary_key"],
-                }
-
-        log.info(
-            "introspect.success",
-            connection_id=str(conn.id),
-            table_count=len(schema_data),
-            column_count=sum(len(t["columns"]) for t in schema_data.values()),
-        )
-
-        return schema_data
-
-    except Exception as exc:
-        log.error("introspect.failed", connection_id=str(conn.id), error=str(exc))
-        return {}
-
-    finally:
-        if db_conn is not None:
-            try:
-                await db_conn.close()
-            except Exception:
-                pass
 
 
 async def _load_user_permissions(
@@ -602,29 +489,34 @@ async def execute_query(
     # Build allowed tables set from schema
     allowed_tables = set(schema_data.keys()) if schema_data else set()
 
+    # Build allowed columns per table (from permission-filtered schema)
+    allowed_columns: dict[str, set[str]] = {}
+    for tbl, info in schema_data.items():
+        cols = info.get("columns", {})
+        if isinstance(cols, dict):
+            allowed_columns[tbl] = set(cols.keys())
+
+    # Load denied columns for column-level permission check (step 9)
+    user_perms = await _load_user_permissions(
+        user_id, role, department, conn_uuid, db,
+    )
+    denied_columns = user_perms.get("denied_columns", set())
+
     validation = validate_sql(
         raw_sql=raw_sql,
         allowed_tables=allowed_tables,
         max_rows=connection.max_rows,
-        dialect="postgres",
+        dialect=get_dialect(connection.db_type),
+        denied_columns=denied_columns if denied_columns else None,
+        allowed_columns=allowed_columns if allowed_columns else None,
     )
 
     # ── Step 7: Execute against user's database ──────────────────────────
-    # Decrypt connection credentials
-    creds = json.loads(
-        key_manager.decrypt(connection.encrypted_credentials, KeyPurpose.DB_CREDENTIALS)
-    )
-
-    query_result = await execute_query_postgres(
-        host=connection.host,
-        port=connection.port,
-        database=connection.database_name,
-        username=creds["username"],
-        password=creds["password"],
+    # Executor factory routes by db_type (postgres, mysql, bigquery)
+    query_result = await execute_query(
+        connection=connection,
         sql=validation.sql,
-        max_rows=connection.max_rows,
-        query_timeout=connection.query_timeout,
-        ssl_mode=connection.ssl_mode,
+        key_manager=key_manager,
     )
 
     # ── Step 8: Store conversation + message ─────────────────────────────

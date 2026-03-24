@@ -12,6 +12,7 @@ import {
   Menu,
   X,
   ChevronDown,
+  HardDrive,
 } from "lucide-react";
 
 import { useAuthStore } from "@/stores/auth-store";
@@ -42,6 +43,11 @@ const navItems: NavItem[] = [
     label: "Saved Queries",
     path: "/saved-queries",
     icon: <Bookmark className="h-4 w-4" />,
+  },
+  {
+    label: "Schema Browser",
+    path: "/schema-browser",
+    icon: <HardDrive className="h-4 w-4" />,
   },
   {
     label: "Connections",

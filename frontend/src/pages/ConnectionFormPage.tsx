@@ -56,11 +56,11 @@ const DEFAULT_PORTS: Record<string, number> = {
 const connectionSchema = z.object({
   name:           z.string().min(1, "Name is required").max(255),
   db_type:        z.enum(["postgresql", "mysql", "mssql", "bigquery", "snowflake"]),
-  host:           z.string().min(1, "Host is required").max(500),
-  port:           z.coerce.number().int().min(1).max(65535),
-  database_name:  z.string().min(1, "Database name is required").max(255),
+  host:           z.string().max(500).default(""),
+  port:           z.coerce.number().int().min(0).max(65535).default(5432),
+  database_name:  z.string().min(1, "Database name / Project ID is required").max(255),
   username:       z.string().max(255).default(""),
-  password:       z.string().max(1024).default(""),
+  password:       z.string().max(10240).default(""),
   ssl_mode:       z.enum(["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]),
   query_timeout:  z.coerce.number().int().min(1).max(300),
   max_rows:       z.coerce.number().int().min(1).max(100000),
@@ -171,6 +171,12 @@ export default function ConnectionFormPage() {
   const isPending = createMutation.isPending || updateMutation.isPending;
 
   const onSubmit = (data: ConnectionFormData) => {
+    // Host is required for non-BigQuery types
+    if (data.db_type !== "bigquery" && !data.host.trim()) {
+      toast.error("Host is required for this database type");
+      return;
+    }
+
     const schemas = data.allowed_schemas
       .split(",")
       .map((s) => s.trim())
@@ -279,34 +285,55 @@ export default function ConnectionFormPage() {
             </h2>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-3 gap-4">
-              <div className="col-span-2">
+            {watchDbType !== "bigquery" ? (
+              <>
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="col-span-2">
+                    <Input
+                      label="Host"
+                      placeholder="e.g. db.example.com"
+                      error={errors.host?.message}
+                      {...register("host")}
+                    />
+                  </div>
+                  <Input
+                    label="Port"
+                    type="number"
+                    error={errors.port?.message}
+                    {...register("port")}
+                  />
+                </div>
                 <Input
-                  label="Host"
-                  placeholder="e.g. db.example.com"
-                  error={errors.host?.message}
-                  {...register("host")}
+                  label="Database Name"
+                  placeholder="e.g. analytics_db"
+                  error={errors.database_name?.message}
+                  {...register("database_name")}
                 />
-              </div>
-              <Input
-                label="Port"
-                type="number"
-                error={errors.port?.message}
-                {...register("port")}
-              />
-            </div>
-            <Input
-              label="Database Name"
-              placeholder="e.g. analytics_db"
-              error={errors.database_name?.message}
-              {...register("database_name")}
-            />
-            <Select
-              label="SSL Mode"
-              options={SSL_MODE_OPTIONS}
-              error={errors.ssl_mode?.message}
-              {...register("ssl_mode")}
-            />
+                <Select
+                  label="SSL Mode"
+                  options={SSL_MODE_OPTIONS}
+                  error={errors.ssl_mode?.message}
+                  {...register("ssl_mode")}
+                />
+              </>
+            ) : (
+              <>
+                <Input
+                  label="GCP Project ID"
+                  placeholder="e.g. my-gcp-project-123"
+                  hint="The Google Cloud project containing your BigQuery datasets"
+                  error={errors.database_name?.message}
+                  {...register("database_name")}
+                />
+                <Input
+                  label="Default Dataset"
+                  placeholder="e.g. analytics"
+                  hint="Comma-separated. Tables will be read from these datasets."
+                  error={errors.allowed_schemas?.message}
+                  {...register("allowed_schemas")}
+                />
+              </>
+            )}
           </CardContent>
         </Card>
 
@@ -324,20 +351,25 @@ export default function ConnectionFormPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             <Input
-              label="Username"
-              placeholder={isEdit ? "(unchanged)" : "Database username"}
+              label={watchDbType === "bigquery" ? "Service Account Email" : "Username"}
+              placeholder={isEdit ? "(unchanged)" : watchDbType === "bigquery" ? "sa@project.iam.gserviceaccount.com" : "Database username"}
               autoComplete="off"
               error={errors.username?.message}
               {...register("username")}
             />
             <Input
-              label="Password"
-              type="password"
-              placeholder={isEdit ? "(unchanged)" : "Database password"}
+              label={watchDbType === "bigquery" ? "Service Account JSON Key" : "Password"}
+              type={watchDbType === "bigquery" ? "text" : "password"}
+              placeholder={isEdit ? "(unchanged)" : watchDbType === "bigquery" ? "Paste full JSON key…" : "Database password"}
               autoComplete="new-password"
               error={errors.password?.message}
               {...register("password")}
             />
+            {watchDbType === "bigquery" && (
+              <p className="text-[10px] text-slate-500">
+                Paste the full service account JSON key. It will be encrypted at rest using HKDF.
+              </p>
+            )}
           </CardContent>
         </Card>
 
@@ -365,13 +397,15 @@ export default function ConnectionFormPage() {
                 {...register("max_rows")}
               />
             </div>
-            <Input
-              label="Allowed Schemas"
-              placeholder="public, analytics"
-              hint="Comma-separated list of schemas accessible through this connection"
-              error={errors.allowed_schemas?.message}
-              {...register("allowed_schemas")}
-            />
+            {watchDbType !== "bigquery" && (
+              <Input
+                label="Allowed Schemas"
+                placeholder="public, analytics"
+                hint="Comma-separated list of schemas accessible through this connection"
+                error={errors.allowed_schemas?.message}
+                {...register("allowed_schemas")}
+              />
+            )}
           </CardContent>
         </Card>
 

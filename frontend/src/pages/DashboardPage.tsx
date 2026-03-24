@@ -62,7 +62,7 @@ export default function DashboardPage() {
           Welcome back{user?.name ? `, ${user.name.split(" ")[0]}` : ""}
         </h1>
         <p className="text-sm text-slate-400 mt-1">
-          Smart BI Agent v3.1.0 — Phase 3 IAM complete
+          Smart BI Agent v3.1.0 — Phase 4 Query + Viz complete
         </p>
       </div>
 
@@ -73,7 +73,7 @@ export default function DashboardPage() {
             <StatusBadge label="Infrastructure" phase={1} done />
             <StatusBadge label="API Routes" phase={2} done />
             <StatusBadge label="IAM Frontend" phase={3} done />
-            <StatusBadge label="Query + Viz" phase={4} done={false} />
+            <StatusBadge label="Query + Viz" phase={4} done />
           </div>
         </CardContent>
       </Card>
@@ -100,7 +100,7 @@ export default function DashboardPage() {
             icon={<BarChart3 className="h-5 w-5" />}
             title="Visualizations"
             description="Auto-generated charts and dashboards from query results"
-            status="upcoming"
+            status="ready"
           />
           <FeatureCard
             icon={<Calendar className="h-5 w-5" />}
@@ -133,7 +133,7 @@ export default function DashboardPage() {
               icon={<Settings className="h-5 w-5" />}
               title="Admin Panel"
               description="User management, LLM providers, audit log, and system configuration"
-              status="upcoming"
+              status="ready"
             />
           </RoleGuard>
         </div>

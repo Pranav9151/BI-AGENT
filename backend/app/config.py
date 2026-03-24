@@ -220,6 +220,7 @@ class Settings(BaseSettings):
     # =========================================================================
     OLLAMA_BASE_URL: str = "http://ollama:11434"  # Docker internal ONLY
     OLLAMA_ENABLED: bool = False
+    ALLOW_PRIVATE_DB_CONNECTIONS: bool = False
 
     # =========================================================================
     # Email / SMTP

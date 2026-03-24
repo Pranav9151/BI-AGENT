@@ -2,6 +2,11 @@ import { useState } from "react";
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
+  Database,
+  Brain,
+  MessageSquare,
+  Bookmark,
+  Users,
   User,
   LogOut,
   Menu,
@@ -27,6 +32,34 @@ const navItems: NavItem[] = [
     label: "Dashboard",
     path: "/",
     icon: <LayoutDashboard className="h-4 w-4" />,
+  },
+  {
+    label: "AI Query",
+    path: "/query",
+    icon: <MessageSquare className="h-4 w-4" />,
+  },
+  {
+    label: "Saved Queries",
+    path: "/saved-queries",
+    icon: <Bookmark className="h-4 w-4" />,
+  },
+  {
+    label: "Connections",
+    path: "/connections",
+    icon: <Database className="h-4 w-4" />,
+    adminOnly: true,
+  },
+  {
+    label: "LLM Providers",
+    path: "/llm-providers",
+    icon: <Brain className="h-4 w-4" />,
+    adminOnly: true,
+  },
+  {
+    label: "Admin",
+    path: "/admin",
+    icon: <Users className="h-4 w-4" />,
+    adminOnly: true,
   },
   {
     label: "Profile",

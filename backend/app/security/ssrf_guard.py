@@ -23,6 +23,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from app.security.dns_pinner import (
+    BLOCKED_HOSTS,
     DNSPinningError,
     DNSResolutionError,
     PinnedHost,
@@ -40,22 +41,30 @@ def validate_connection_host(
     host: str,
     port: Optional[int] = None,
 ) -> PinnedHost:
-    """
-    Validate a database connection host against SSRF attacks.
+    from app.config import get_settings
+    settings = get_settings()
 
-    This is the primary SSRF guard for database connections.
-    Returns a PinnedHost — caller MUST use pinned.resolved_ip for connections.
+    # Development override: allow private IPs for Docker-internal connections
+    if settings.ALLOW_PRIVATE_DB_CONNECTIONS:
+        # ALWAYS block cloud metadata endpoints — even in dev
+        if host.strip().lower() in BLOCKED_HOSTS:
+            raise SSRFError(
+                f"SSRF blocked: '{host}' is a cloud metadata endpoint. "
+                f"This is always blocked regardless of ALLOW_PRIVATE_DB_CONNECTIONS."
+            )
 
-    Args:
-        host: Hostname or IP from connection config.
-        port: Database port.
+        # Resolve hostname and return pinned result without IP range check
+        import socket
+        try:
+            results = socket.getaddrinfo(host, port or 5432, proto=socket.IPPROTO_TCP)
+            if not results:
+                raise SSRFError(f"Cannot resolve database host: '{host}'")
+            resolved_ip = results[0][4][0]
+            return PinnedHost(original_host=host, resolved_ip=resolved_ip, port=port)
+        except socket.gaierror as e:
+            raise SSRFError(f"Cannot resolve database host '{host}': {e}") from e
 
-    Returns:
-        PinnedHost with validated resolved IP.
-
-    Raises:
-        SSRFError: If the host resolves to a blocked network.
-    """
+    # Standard SSRF validation — blocks all private/reserved IPs
     try:
         return resolve_and_pin(host, port)
     except DNSPinningError as e:

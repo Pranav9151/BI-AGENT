@@ -17,6 +17,13 @@ import TOTPVerifyPage from "@/pages/TOTPVerifyPage";
 import TOTPSetupPage from "@/pages/TOTPSetupPage";
 import DashboardPage from "@/pages/DashboardPage";
 import ProfilePage from "@/pages/ProfilePage";
+import ConnectionsPage from "@/pages/ConnectionsPage";
+import ConnectionFormPage from "@/pages/ConnectionFormPage";
+import LLMProvidersPage from "@/pages/LLMProvidersPage";
+import LLMProviderFormPage from "@/pages/LLMProviderFormPage";
+import QueryPage from "@/pages/QueryPage";
+import SavedQueriesPage from "@/pages/SavedQueriesPage";
+import AdminPage from "@/pages/AdminPage";
 
 // ─── Auth Initializer ────────────────────────────────────────────────────────
 
@@ -52,6 +59,25 @@ export default function App() {
             <Route element={<AppShell />}>
               <Route index element={<DashboardPage />} />
               <Route path="profile" element={<ProfilePage />} />
+
+              {/* Phase 4A — Connections (admin only enforced by backend) */}
+              <Route path="connections" element={<ConnectionsPage />} />
+              <Route path="connections/new" element={<ConnectionFormPage />} />
+              <Route path="connections/:id/edit" element={<ConnectionFormPage />} />
+
+              {/* Phase 4B — LLM Providers (admin only enforced by backend) */}
+              <Route path="llm-providers" element={<LLMProvidersPage />} />
+              <Route path="llm-providers/new" element={<LLMProviderFormPage />} />
+              <Route path="llm-providers/:id/edit" element={<LLMProviderFormPage />} />
+
+              {/* Phase 4C — AI Query (analyst+ enforced by backend) */}
+              <Route path="query" element={<QueryPage />} />
+
+              {/* Phase 4D — Saved Queries (ownership enforced by backend) */}
+              <Route path="saved-queries" element={<SavedQueriesPage />} />
+
+              {/* Phase 4E — Admin Panel (admin only enforced by backend) */}
+              <Route path="admin" element={<AdminPage />} />
             </Route>
           </Route>
 

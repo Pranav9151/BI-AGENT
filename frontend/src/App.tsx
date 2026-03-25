@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, lazy, Suspense } from "react";
 import {
   BrowserRouter,
   Routes,
@@ -11,20 +11,27 @@ import { ProtectedRoute } from "@/components/auth";
 import { LoadingScreen } from "@/components/ui";
 import AppShell from "@/components/AppShell";
 
-// ── Pages ────────────────────────────────────────────────────────────────────
+// ── Light Pages (direct import — small bundles) ─────────────────────────────
 import LoginPage from "@/pages/LoginPage";
 import TOTPVerifyPage from "@/pages/TOTPVerifyPage";
 import TOTPSetupPage from "@/pages/TOTPSetupPage";
 import DashboardPage from "@/pages/DashboardPage";
 import ProfilePage from "@/pages/ProfilePage";
-import ConnectionsPage from "@/pages/ConnectionsPage";
-import ConnectionFormPage from "@/pages/ConnectionFormPage";
-import LLMProvidersPage from "@/pages/LLMProvidersPage";
-import LLMProviderFormPage from "@/pages/LLMProviderFormPage";
-import QueryPage from "@/pages/QueryPage";
-import SavedQueriesPage from "@/pages/SavedQueriesPage";
-import SchemaPage from "@/pages/SchemaPage";
-import AdminPage from "@/pages/AdminPage";
+
+// ── Heavy Pages (lazy loaded — Monaco, Recharts, TanStack Table) ────────────
+const ConnectionsPage = lazy(() => import("@/pages/ConnectionsPage"));
+const ConnectionFormPage = lazy(() => import("@/pages/ConnectionFormPage"));
+const LLMProvidersPage = lazy(() => import("@/pages/LLMProvidersPage"));
+const LLMProviderFormPage = lazy(() => import("@/pages/LLMProviderFormPage"));
+const QueryPage = lazy(() => import("@/pages/QueryPage"));
+const SavedQueriesPage = lazy(() => import("@/pages/SavedQueriesPage"));
+const SchemaPage = lazy(() => import("@/pages/SchemaPage"));
+const StudioPage = lazy(() => import("@/pages/StudioPage"));
+const NotificationsPage = lazy(() => import("@/pages/NotificationsPage"));
+const SchedulesPage = lazy(() => import("@/pages/SchedulesPage"));
+const PermissionsPage = lazy(() => import("@/pages/PermissionsPage"));
+const MonitoringPage = lazy(() => import("@/pages/MonitoringPage"));
+const AdminPage = lazy(() => import("@/pages/AdminPage"));
 
 // ─── Auth Initializer ────────────────────────────────────────────────────────
 
@@ -61,27 +68,22 @@ export default function App() {
               <Route index element={<DashboardPage />} />
               <Route path="profile" element={<ProfilePage />} />
 
-              {/* Phase 4A — Connections (admin only enforced by backend) */}
-              <Route path="connections" element={<ConnectionsPage />} />
-              <Route path="connections/new" element={<ConnectionFormPage />} />
-              <Route path="connections/:id/edit" element={<ConnectionFormPage />} />
-
-              {/* Phase 4B — LLM Providers (admin only enforced by backend) */}
-              <Route path="llm-providers" element={<LLMProvidersPage />} />
-              <Route path="llm-providers/new" element={<LLMProviderFormPage />} />
-              <Route path="llm-providers/:id/edit" element={<LLMProviderFormPage />} />
-
-              {/* Phase 4C — AI Query (analyst+ enforced by backend) */}
-              <Route path="query" element={<QueryPage />} />
-
-              {/* Phase 4D — Saved Queries (ownership enforced by backend) */}
-              <Route path="saved-queries" element={<SavedQueriesPage />} />
-
-              {/* Phase 5 — Schema Browser (analyst+ enforced by backend) */}
-              <Route path="schema-browser" element={<SchemaPage />} />
-
-              {/* Phase 4E — Admin Panel (admin only enforced by backend) */}
-              <Route path="admin" element={<AdminPage />} />
+              {/* All lazy-loaded pages wrapped in Suspense */}
+              <Route path="connections" element={<Suspense fallback={<LoadingScreen />}><ConnectionsPage /></Suspense>} />
+              <Route path="connections/new" element={<Suspense fallback={<LoadingScreen />}><ConnectionFormPage /></Suspense>} />
+              <Route path="connections/:id/edit" element={<Suspense fallback={<LoadingScreen />}><ConnectionFormPage /></Suspense>} />
+              <Route path="llm-providers" element={<Suspense fallback={<LoadingScreen />}><LLMProvidersPage /></Suspense>} />
+              <Route path="llm-providers/new" element={<Suspense fallback={<LoadingScreen />}><LLMProviderFormPage /></Suspense>} />
+              <Route path="llm-providers/:id/edit" element={<Suspense fallback={<LoadingScreen />}><LLMProviderFormPage /></Suspense>} />
+              <Route path="query" element={<Suspense fallback={<LoadingScreen />}><QueryPage /></Suspense>} />
+              <Route path="saved-queries" element={<Suspense fallback={<LoadingScreen />}><SavedQueriesPage /></Suspense>} />
+              <Route path="schema-browser" element={<Suspense fallback={<LoadingScreen />}><SchemaPage /></Suspense>} />
+              <Route path="studio" element={<Suspense fallback={<LoadingScreen />}><StudioPage /></Suspense>} />
+              <Route path="notifications" element={<Suspense fallback={<LoadingScreen />}><NotificationsPage /></Suspense>} />
+              <Route path="schedules" element={<Suspense fallback={<LoadingScreen />}><SchedulesPage /></Suspense>} />
+              <Route path="admin/permissions" element={<Suspense fallback={<LoadingScreen />}><PermissionsPage /></Suspense>} />
+              <Route path="monitoring" element={<Suspense fallback={<LoadingScreen />}><MonitoringPage /></Suspense>} />
+              <Route path="admin" element={<Suspense fallback={<LoadingScreen />}><AdminPage /></Suspense>} />
             </Route>
           </Route>
 

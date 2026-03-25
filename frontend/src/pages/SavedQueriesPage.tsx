@@ -138,7 +138,7 @@ function QueryDetailModal({
             <p className="text-sm text-slate-400 mb-4">{query.description}</p>
           )}
           <div className="rounded-lg overflow-hidden border border-slate-700/40">
-            <div className="h-[300px]">
+            <div className="h-[300px] bg-[#1e1e1e]">
               <Editor
                 height="100%"
                 defaultLanguage="sql"
@@ -283,7 +283,7 @@ function RerunResultsModal({
             </div>
           )}
           {tab === "sql" && (
-            <div className="h-[300px]">
+            <div className="h-[300px] bg-[#1e1e1e]">
               <Editor
                 height="100%"
                 defaultLanguage="sql"
@@ -301,10 +301,6 @@ function RerunResultsModal({
                   overviewRulerBorder: false,
                   hideCursorInOverviewRuler: true,
                   scrollbar: { vertical: "hidden", horizontal: "auto", useShadows: false },
-                }}
-                onMount={(editor) => {
-                  const domNode = editor.getDomNode();
-                  if (domNode) domNode.style.background = "transparent";
                 }}
               />
             </div>

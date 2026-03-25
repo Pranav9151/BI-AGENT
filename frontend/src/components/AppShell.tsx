@@ -13,6 +13,11 @@ import {
   X,
   ChevronDown,
   HardDrive,
+  Bell,
+  Clock,
+  Shield,
+  Activity,
+  Palette,
 } from "lucide-react";
 
 import { useAuthStore } from "@/stores/auth-store";
@@ -50,6 +55,11 @@ const navItems: NavItem[] = [
     icon: <HardDrive className="h-4 w-4" />,
   },
   {
+    label: "Studio",
+    path: "/studio",
+    icon: <Palette className="h-4 w-4" />,
+  },
+  {
     label: "Connections",
     path: "/connections",
     icon: <Database className="h-4 w-4" />,
@@ -59,6 +69,30 @@ const navItems: NavItem[] = [
     label: "LLM Providers",
     path: "/llm-providers",
     icon: <Brain className="h-4 w-4" />,
+    adminOnly: true,
+  },
+  {
+    label: "Notifications",
+    path: "/notifications",
+    icon: <Bell className="h-4 w-4" />,
+    adminOnly: true,
+  },
+  {
+    label: "Schedules",
+    path: "/schedules",
+    icon: <Clock className="h-4 w-4" />,
+    adminOnly: true,
+  },
+  {
+    label: "Permissions",
+    path: "/admin/permissions",
+    icon: <Shield className="h-4 w-4" />,
+    adminOnly: true,
+  },
+  {
+    label: "Monitoring",
+    path: "/monitoring",
+    icon: <Activity className="h-4 w-4" />,
     adminOnly: true,
   },
   {

@@ -535,26 +535,28 @@ async def test_platform(
     # Decrypt in-memory only; zero reference immediately after use
     plaintext_config: Optional[str] = None
     success = False
-    message = "Connectivity probe not yet implemented (Phase 6)."
+    message = "Test failed."
 
     try:
         plaintext_config = key_manager.decrypt(
             p.encrypted_config, KeyPurpose.NOTIFICATION_KEYS
         )
-        # Phase 6: pass plaintext_config to the provider adapter for a real probe.
-        # For now: decrypt succeeds → credentials are valid format.
-        success = True
-        message = (
-            f"Credentials decrypted successfully for {p.platform_type!r} platform. "
-            "Live connectivity probe available in Phase 6."
-        )
+        # Live connectivity probe via dispatcher
+        import json as _json
+        from app.notifications.dispatcher import test_provider
+
+        config_dict = _json.loads(plaintext_config)
+        result = await test_provider(p.platform_type, config_dict)
+        success = result.success
+        message = result.message if result.success else (result.error or "Test failed")
     except Exception as exc:
         log.warning(
-            "notifications.test.decrypt_failed",
+            "notifications.test.failed",
             admin_id=admin["user_id"],
             platform_id=str(platform_id),
+            error=str(exc),
         )
-        message = "Failed to decrypt platform credentials."
+        message = f"Test failed: {str(exc)[:100]}"
     finally:
         # Zero the plaintext reference (T — credential in-memory exposure)
         plaintext_config = None  # noqa: F841

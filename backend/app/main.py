@@ -174,7 +174,11 @@ def create_app() -> FastAPI:
     # Add order:       RateLimiter → SecurityHeaders → RequestID → CORS
     # ------------------------------------------------------------------
 
-    # 4. Rate limiter (innermost — closest to handlers)
+    # 5. Content-Type validation (innermost — closest to handlers)
+    from app.middleware.content_type import ContentTypeValidationMiddleware
+    app.add_middleware(ContentTypeValidationMiddleware)
+
+    # 4. Rate limiter
     from app.middleware.rate_limiter import RateLimiterMiddleware
     app.add_middleware(RateLimiterMiddleware)
 

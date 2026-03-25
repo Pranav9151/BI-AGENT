@@ -64,7 +64,7 @@ log = get_logger(__name__)
 # (path_prefix, limit_per_minute, endpoint_class_name)
 _ENDPOINT_RULES: list[tuple[str, int, str]] = [
     ("/api/v1/auth",    10,  "auth"),
-    ("/api/v1/query",   10,  "llm"),
+    ("/api/v1/query",   30,  "llm"),
     ("/api/v1/export",   5,  "export"),
     ("/api/v1/schema",  60,  "schema"),
 ]
@@ -157,13 +157,6 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
                     },
                 )
 
-            # Attach rate limit headers to successful responses
-            response = await call_next(request)
-            response.headers["X-RateLimit-Limit"] = str(limit)
-            response.headers["X-RateLimit-Remaining"] = str(max(0, limit - count))
-            response.headers["X-RateLimit-Reset"] = str((window + 1) * 60)
-            return response
-
         except RuntimeError:
             # Redis not initialized — this shouldn't happen post-startup
             # but guard against it during tests/startup race
@@ -177,7 +170,7 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
                 content={
                     "error": {
                         "code": "SERVICE_UNAVAILABLE",
-                        "message": "Service temporarily unavailable.",
+                        "message": "Security service not ready. Redis DB1 may still be starting. Try again in a few seconds.",
                         "request_id": getattr(request.state, "request_id", None),
                     }
                 },
@@ -189,14 +182,25 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
                 path=request.url.path,
                 ip=client_ip,
                 error=str(exc),
+                error_type=type(exc).__name__,
             )
             return JSONResponse(
                 status_code=503,
                 content={
                     "error": {
                         "code": "SERVICE_UNAVAILABLE",
-                        "message": "Service temporarily unavailable. Please try again shortly.",
+                        "message": f"Security service unavailable (Redis DB1). Please check Docker services: docker compose ps. Error: {type(exc).__name__}",
                         "request_id": getattr(request.state, "request_id", None),
                     }
                 },
             )
+
+        # ── Rate limit passed — forward to downstream handler ────────────
+        # This is OUTSIDE the Redis try/except so downstream errors
+        # (TypeError, ValidationError, etc.) propagate correctly to
+        # FastAPI's error handlers instead of being masked as Redis errors.
+        response = await call_next(request)
+        response.headers["X-RateLimit-Limit"] = str(limit)
+        response.headers["X-RateLimit-Remaining"] = str(max(0, limit - count))
+        response.headers["X-RateLimit-Reset"] = str((window + 1) * 60)
+        return response

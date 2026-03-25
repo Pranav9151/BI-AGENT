@@ -40,7 +40,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.executor_factory import execute_query, get_dialect
+from app.db.executor_factory import execute_query as run_query, get_dialect
 from app.dependencies import (
     CurrentUser,
     get_audit_writer,
@@ -513,7 +513,7 @@ async def execute_query(
 
     # ── Step 7: Execute against user's database ──────────────────────────
     # Executor factory routes by db_type (postgres, mysql, bigquery)
-    query_result = await execute_query(
+    query_result = await run_query(
         connection=connection,
         sql=validation.sql,
         key_manager=key_manager,
@@ -586,4 +586,61 @@ async def execute_query(
         provider_type=llm_response.provider_type,
         model=llm_response.model,
         llm_latency_ms=llm_response.latency_ms,
+    )
+
+
+# =============================================================================
+# GET /suggestions  — IAM-aware dynamic suggestions
+# =============================================================================
+
+class SuggestionCategory(BaseModel):
+    key: str
+    label: str
+    icon: str
+    color: str
+    questions: list[str]
+
+
+class SuggestionsResponse(BaseModel):
+    connection_id: str
+    categories: list[SuggestionCategory]
+
+
+@router.get(
+    "/suggestions",
+    response_model=SuggestionsResponse,
+    summary="Get IAM-filtered query suggestions for a connection",
+)
+async def get_suggestions(
+    connection_id: str,
+    request: Request,
+    current_user: CurrentUser = Depends(require_analyst_or_above),
+    db: AsyncSession = Depends(get_db),
+    redis=Depends(get_redis_cache),
+    key_manager=Depends(get_key_manager),
+) -> SuggestionsResponse:
+    """
+    Generate query suggestions based on the user's permission-filtered schema.
+    Users only see suggestions for tables they have IAM access to.
+    """
+    user_id = current_user["user_id"]
+    role = current_user.get("role", "viewer")
+    department = current_user.get("department", "")
+
+    try:
+        conn_uuid = uuid.UUID(connection_id)
+    except ValueError:
+        return SuggestionsResponse(connection_id=connection_id, categories=[])
+
+    # Load permission-filtered schema (same as query pipeline)
+    schema_data = await _load_schema_for_query(
+        conn_uuid, user_id, role, department, db, redis, key_manager,
+    )
+
+    from app.services.suggestion_generator import generate_suggestions
+    categories = generate_suggestions(schema_data)
+
+    return SuggestionsResponse(
+        connection_id=connection_id,
+        categories=[SuggestionCategory(**c) for c in categories],
     )

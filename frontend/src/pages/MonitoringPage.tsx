@@ -42,8 +42,8 @@ function HealthPanel() {
         <Button variant="ghost" size="sm" icon={<RefreshCw className="h-3 w-3" />} onClick={() => refetch()} isLoading={isLoading}>Refresh</Button>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {services.map((svc) => (
-          <Card key={svc.name} className="p-4">
+        {services.map((svc, idx) => (
+          <Card key={svc.name} className="p-4 hover:border-slate-600/50 transition-all animate-fade-in" style={{ animationDelay: `${idx * 80}ms` }}>
             <div className="flex items-center gap-3">
               <span className={cn("p-2 rounded-lg",
                 svc.status === "healthy" ? "bg-emerald-500/10 text-emerald-400" :
@@ -140,10 +140,26 @@ function AuditPanel() {
         </select>
       </div>
 
-      {isLoading && <Card className="p-8"><div className="flex items-center justify-center gap-3"><Loader2 className="h-5 w-5 text-blue-400 animate-spin" /><span className="text-sm text-slate-400">Loading…</span></div></Card>}
+      {isLoading && (
+        <Card className="p-4">
+          <div className="space-y-2">
+            {[1,2,3,4,5].map((i) => (
+              <div key={i} className="animate-skeleton rounded h-10 bg-slate-700/30" />
+            ))}
+          </div>
+        </Card>
+      )}
 
       {!isLoading && logs.length === 0 && (
-        <Card className="p-8"><div className="text-center"><FileText className="h-6 w-6 text-slate-600 mx-auto mb-2" /><p className="text-sm text-slate-400">No audit logs found</p></div></Card>
+        <Card className="p-8">
+          <div className="text-center">
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-slate-500/10 to-slate-600/5 border border-slate-600/10 flex items-center justify-center mx-auto mb-3">
+              <FileText className="h-6 w-6 text-slate-600" />
+            </div>
+            <p className="text-sm font-medium text-slate-300">No audit logs found</p>
+            <p className="text-xs text-slate-500 mt-1">{search ? "Try a different search term" : "Query execution will appear here"}</p>
+          </div>
+        </Card>
       )}
 
       {logs.length > 0 && (
@@ -187,14 +203,32 @@ function TokensPanel() {
   return (
     <div className="space-y-4">
       <h2 className="text-sm font-semibold text-slate-300">LLM Token Usage</h2>
-      <Card className="p-8">
+      <Card className="p-10">
         <div className="text-center">
-          <Cpu className="h-8 w-8 text-slate-600 mx-auto mb-3" />
-          <p className="text-sm text-slate-400">Token usage charts</p>
-          <p className="text-xs text-slate-500 mt-1">
-            Daily and weekly token consumption per provider will be displayed here.
-            Data is collected from the llm_token_usage table.
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500/10 to-blue-500/5 border border-violet-500/10 flex items-center justify-center mx-auto mb-4">
+            <Cpu className="h-8 w-8 text-slate-600" />
+          </div>
+          <p className="text-sm font-medium text-slate-300">Token usage tracking</p>
+          <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto leading-relaxed">
+            Daily and weekly token consumption per provider, per user. Token budgets are enforced at 100K tokens/user/day.
+            Data collected via the query pipeline into Redis DB2.
           </p>
+          <div className="flex items-center justify-center gap-6 mt-6">
+            <div className="text-center">
+              <p className="text-lg font-bold text-blue-400">100K</p>
+              <p className="text-[10px] text-slate-500 mt-0.5">Daily limit/user</p>
+            </div>
+            <div className="w-px h-8 bg-slate-700/50" />
+            <div className="text-center">
+              <p className="text-lg font-bold text-emerald-400">Redis DB2</p>
+              <p className="text-[10px] text-slate-500 mt-0.5">Storage layer</p>
+            </div>
+            <div className="w-px h-8 bg-slate-700/50" />
+            <div className="text-center">
+              <p className="text-lg font-bold text-amber-400">25h TTL</p>
+              <p className="text-[10px] text-slate-500 mt-0.5">Auto cleanup</p>
+            </div>
+          </div>
         </div>
       </Card>
     </div>
@@ -215,7 +249,12 @@ export default function MonitoringPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white flex items-center gap-2"><Activity className="h-6 w-6 text-blue-400" />Monitoring</h1>
+        <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+          <span className="p-2 rounded-xl bg-gradient-to-br from-emerald-500/20 to-teal-500/10 border border-emerald-500/15">
+            <Activity className="h-5 w-5 text-emerald-400" />
+          </span>
+          Monitoring
+        </h1>
         <p className="text-sm text-slate-400 mt-1">System health, audit trail, and usage metrics</p>
       </div>
 

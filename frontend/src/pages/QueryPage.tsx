@@ -102,8 +102,8 @@ function SaveQueryModal({ result, connectionId, onClose }: { result: QueryRespon
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative w-full max-w-md bg-slate-800 border border-slate-700/60 rounded-2xl shadow-2xl">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-md glass-strong rounded-2xl shadow-2xl animate-page-in">
         <div className="flex items-center justify-between p-4 border-b border-slate-700/40">
           <h2 className="text-sm font-semibold text-white flex items-center gap-2"><Bookmark className="h-4 w-4 text-blue-400" />Save Query</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-white"><X className="h-4 w-4" /></button>
@@ -404,8 +404,13 @@ export default function QueryPage() {
                   <ChartStudio columns={activeResult.columns} rows={activeResult.rows} connectionId={selectedConnection} />
                 )}
                 {activeTab === "sql" && (
-                  <div className="h-full bg-[#1e1e1e]">
+                  <div className="h-full bg-[#1e1e1e] relative">
                     <Editor height="100%" defaultLanguage="sql" value={activeResult.sql} theme="vs-dark"
+                      loading={
+                        <div className="flex items-center justify-center h-full bg-[#1e1e1e]">
+                          <Loader2 className="h-5 w-5 text-slate-500 animate-spin" />
+                        </div>
+                      }
                       options={{
                         readOnly: false, minimap: { enabled: false }, fontSize: 13, lineNumbers: "on",
                         scrollBeyondLastLine: false, wordWrap: "on", padding: { top: 12, bottom: 12 },

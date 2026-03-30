@@ -68,8 +68,8 @@ function AddPermissionModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative w-full max-w-md bg-slate-800 border border-slate-700/60 rounded-2xl shadow-2xl">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-md glass-strong rounded-2xl shadow-2xl animate-page-in">
         <div className="flex items-center justify-between p-5 border-b border-slate-700/40">
           <h2 className="text-base font-semibold text-white">Add {TAB_CONFIG[tier].label}</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-white p-1"><X className="h-4 w-4" /></button>
@@ -180,7 +180,12 @@ export default function PermissionsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2"><Shield className="h-6 w-6 text-blue-400" />Permissions</h1>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+            <span className="p-2 rounded-xl bg-gradient-to-br from-amber-500/20 to-orange-500/10 border border-amber-500/15">
+              <Shield className="h-5 w-5 text-amber-400" />
+            </span>
+            Permissions
+          </h1>
           <p className="text-sm text-slate-400 mt-1">3-tier RBAC: Role → Department → User override</p>
         </div>
         {selectedConnection && <Button size="sm" icon={<Plus className="h-3.5 w-3.5" />} onClick={() => setShowAdd(true)}>Add Permission</Button>}
@@ -205,10 +210,24 @@ export default function PermissionsPage() {
         ))}
       </div>
 
-      {isLoading && <Card className="p-8"><div className="flex items-center justify-center gap-3"><Loader2 className="h-5 w-5 text-blue-400 animate-spin" /><span className="text-sm text-slate-400">Loading…</span></div></Card>}
+      {isLoading && (
+        <div className="space-y-2">
+          {[1,2,3].map((i) => (
+            <Card key={i} className="p-3"><div className="animate-skeleton rounded h-14 bg-slate-700/30" /></Card>
+          ))}
+        </div>
+      )}
 
       {!isLoading && perms.length === 0 && (
-        <Card className="p-8"><div className="text-center"><Shield className="h-6 w-6 text-slate-600 mx-auto mb-2" /><p className="text-sm text-slate-400">No {activeTab} permissions for this connection</p></div></Card>
+        <Card className="p-8">
+          <div className="text-center">
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-amber-500/10 to-orange-500/5 border border-amber-500/10 flex items-center justify-center mx-auto mb-3">
+              <Shield className="h-6 w-6 text-slate-600" />
+            </div>
+            <p className="text-sm font-medium text-slate-300">No {activeTab} permissions for this connection</p>
+            <p className="text-xs text-slate-500 mt-1">Add permissions to control table and column access.</p>
+          </div>
+        </Card>
       )}
 
       {perms.length > 0 && (

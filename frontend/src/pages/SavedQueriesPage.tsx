@@ -144,6 +144,7 @@ function QueryDetailModal({
                 defaultLanguage="sql"
                 value={query.sql_query}
                 theme="vs-dark"
+                loading={<div className="flex items-center justify-center h-full bg-[#1e1e1e]"><Loader2 className="h-5 w-5 text-slate-500 animate-spin" /></div>}
                 options={{
                   readOnly: true,
                   minimap: { enabled: false },
@@ -289,6 +290,7 @@ function RerunResultsModal({
                 defaultLanguage="sql"
                 value={result.sql}
                 theme="vs-dark"
+                loading={<div className="flex items-center justify-center h-full bg-[#1e1e1e]"><Loader2 className="h-5 w-5 text-slate-500 animate-spin" /></div>}
                 options={{
                   readOnly: true,
                   minimap: { enabled: false },

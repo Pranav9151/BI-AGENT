@@ -83,8 +83,8 @@ function CreateScheduleModal({ onClose, onCreated }: { onClose: () => void; onCr
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative w-full max-w-lg bg-slate-800 border border-slate-700/60 rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-lg glass-strong rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto animate-page-in">
         <div className="flex items-center justify-between p-5 border-b border-slate-700/40">
           <h2 className="text-base font-semibold text-white flex items-center gap-2">
             <Calendar className="h-4 w-4 text-blue-400" />Create Schedule
@@ -161,7 +161,12 @@ export default function SchedulesPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2"><Clock className="h-6 w-6 text-blue-400" />Scheduled Reports</h1>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+            <span className="p-2 rounded-xl bg-gradient-to-br from-blue-500/20 to-cyan-500/10 border border-blue-500/15">
+              <Clock className="h-5 w-5 text-blue-400" />
+            </span>
+            Scheduled Reports
+          </h1>
           <p className="text-sm text-slate-400 mt-1">Automate query execution and delivery</p>
         </div>
         <div className="flex gap-2">
@@ -171,18 +176,33 @@ export default function SchedulesPage() {
       </div>
 
       {error && <Alert variant="error">{error instanceof ApiRequestError ? error.message : "Failed to load"}</Alert>}
-      {isLoading && <Card className="p-12"><div className="flex items-center justify-center gap-3"><Loader2 className="h-5 w-5 text-blue-400 animate-spin" /><span className="text-sm text-slate-400">Loading…</span></div></Card>}
+      {isLoading && (
+        <div className="space-y-3">
+          {[1,2,3].map((i) => (
+            <Card key={i} className="p-4"><div className="animate-skeleton rounded h-16 bg-slate-700/30" /></Card>
+          ))}
+        </div>
+      )}
 
       {!isLoading && schedules.length === 0 && (
-        <Card className="p-12"><div className="text-center"><Clock className="h-8 w-8 text-slate-600 mx-auto mb-3" /><p className="text-sm text-slate-400">No schedules yet</p><p className="text-xs text-slate-500 mt-1">Create a schedule to automate report delivery</p></div></Card>
+        <Card className="p-12">
+          <div className="text-center">
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500/10 to-cyan-500/5 border border-blue-500/10 flex items-center justify-center mx-auto mb-4">
+              <Clock className="h-8 w-8 text-slate-600" />
+            </div>
+            <p className="text-sm font-medium text-slate-300">No schedules yet</p>
+            <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">Create a schedule to automate report execution and delivery to Slack, Email, or Teams.</p>
+            <Button size="sm" icon={<Plus className="h-3.5 w-3.5" />} onClick={() => setShowCreate(true)} className="mt-4">New Schedule</Button>
+          </div>
+        </Card>
       )}
 
       {schedules.length > 0 && (
         <div className="space-y-3">
-          {schedules.map((s) => {
+          {schedules.map((s, idx) => {
             const statusCfg = STATUS_CONFIG[s.last_run_status || ""] || null;
             return (
-              <Card key={s.schedule_id} className="p-4">
+              <Card key={s.schedule_id} className="p-4 animate-fade-in" style={{ animationDelay: `${Math.min(idx * 50, 300)}ms` }}>
                 <div className="flex items-start justify-between">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">

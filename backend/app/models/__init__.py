@@ -14,6 +14,7 @@ from app.models.saved_query import SavedQuery
 from app.models.conversation import Conversation, ConversationMessage
 from app.models.schedule import Schedule
 from app.models.token_usage import LLMTokenUsage, KeyRotationRegistry
+from app.models.settings import PlatformSetting, Dashboard
 
 __all__ = [
     "Base",
@@ -27,4 +28,5 @@ __all__ = [
     "Conversation", "ConversationMessage",
     "Schedule",
     "LLMTokenUsage", "KeyRotationRegistry",
+    "PlatformSetting", "Dashboard",
 ]

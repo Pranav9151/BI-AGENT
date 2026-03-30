@@ -1,20 +1,23 @@
 /**
- * Smart BI Agent — Chart Studio v4
+ * Smart BI Agent — Chart Studio v5
  *
- * Fixes:
- *   - Only RESULT columns can be dropped into field wells (schema cols are reference)
- *   - Proper height rendering (no more blank charts)
- *   - Clear visual distinction: result cols = draggable, schema cols = browse only
- *   - Click schema column → copies to clipboard for SQL editing
+ * Fixes (Phase 8):
+ *   - CRITICAL: React key on ChartRenderer forces re-render on field well change
+ *   - Drag-drop visual feedback with animated drop zones
+ *   - Double-click result column to auto-assign (X-Axis if empty, else Values)
+ *   - Clear All button on field wells
+ *   - Collapsible left panel for more chart space
+ *   - Schema columns click-to-copy preserved
  */
 
-import { useState, useMemo, type DragEvent } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   BarChart3, LineChart as LineIcon, PieChart as PieIcon,
   Settings2, LayoutGrid, ArrowRightLeft, GripVertical,
   X, Hash, Type, Calendar, FileDown, Layers, Table2,
-  ChevronRight, ChevronDown, Copy,
+  ChevronRight, ChevronDown, Copy, RotateCcw,
+  PanelLeftClose, PanelLeftOpen, Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -80,28 +83,31 @@ function exportCsv(columns: string[], rows: Record<string, unknown>[]) {
 
 // ─── Draggable Result Column ────────────────────────────────────────────────
 
-function DraggableCol({ name, type }: { name: string; type: ColType }) {
+function DraggableCol({ name, type, onDoubleClick }: { name: string; type: ColType; onDoubleClick: () => void }) {
   return (
     <div draggable
       onDragStart={(e) => { e.dataTransfer.setData("text/plain", name); e.dataTransfer.effectAllowed = "copy"; }}
-      className="flex items-center gap-1.5 px-2 py-1 rounded border border-slate-600/30 bg-slate-700/20 cursor-grab active:cursor-grabbing hover:border-blue-500/40 hover:bg-blue-500/5 transition-all text-[11px] group">
-      <GripVertical className="h-2.5 w-2.5 text-slate-600 group-hover:text-blue-400 shrink-0" />
+      onDoubleClick={onDoubleClick}
+      className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg border border-slate-600/30 bg-slate-700/20 cursor-grab active:cursor-grabbing hover:border-blue-500/40 hover:bg-blue-500/5 transition-all text-[11px] group select-none"
+      title="Drag to a field well or double-click">
+      <GripVertical className="h-2.5 w-2.5 text-slate-600 group-hover:text-blue-400 shrink-0 transition-colors" />
       {TYPE_ICONS[type]}
-      <span className="text-slate-300 truncate">{name}</span>
+      <span className="text-slate-300 truncate flex-1">{name}</span>
+      <span className="text-[8px] text-slate-600 uppercase">{type}</span>
     </div>
   );
 }
 
-// ─── Schema Column (reference only — click to copy) ─────────────────────────
+// ─── Schema Column ──────────────────────────────────────────────────────────
 
 function SchemaCol({ name, type, tableName }: { name: string; type: ColType; tableName: string }) {
   return (
     <button onClick={() => { navigator.clipboard.writeText(`${tableName}.${name}`); toast.success(`Copied ${tableName}.${name}`); }}
-      className="w-full flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] text-slate-500 hover:text-slate-300 hover:bg-slate-700/30 transition-all text-left"
+      className="w-full flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] text-slate-500 hover:text-slate-300 hover:bg-slate-700/30 transition-all text-left group"
       title={`Click to copy: ${tableName}.${name}`}>
       {TYPE_ICONS[type]}
-      <span className="truncate">{name}</span>
-      <Copy className="h-2 w-2 ml-auto opacity-0 group-hover:opacity-100 text-slate-600" />
+      <span className="truncate flex-1">{name}</span>
+      <Copy className="h-2 w-2 ml-auto opacity-0 group-hover:opacity-100 text-slate-600 transition-opacity" />
     </button>
   );
 }
@@ -120,7 +126,7 @@ function SchemaTree({ tableName, columns }: { tableName: string; columns: { name
         <span className="text-[8px] text-slate-700 ml-auto">{columns.length}</span>
       </button>
       {open && (
-        <div className="ml-3 pl-2 border-l border-slate-800 space-y-0 mt-0.5 group">
+        <div className="ml-3 pl-2 border-l border-slate-800 space-y-0 mt-0.5">
           {columns.map((c) => <SchemaCol key={c.name} name={c.name} type={c.type} tableName={tableName} />)}
         </div>
       )}
@@ -130,26 +136,48 @@ function SchemaTree({ tableName, columns }: { tableName: string; columns: { name
 
 // ─── Field Well ─────────────────────────────────────────────────────────────
 
-function FieldWell({ label, icon, fields, onDrop, onRemove, placeholder, multi = true }: {
+function FieldWell({ label, icon, fields, onDrop, onRemove, placeholder, multi = true, accentColor = "blue" }: {
   label: string; icon: React.ReactNode; fields: string[];
   onDrop: (col: string) => void; onRemove: (col: string) => void;
-  placeholder: string; multi?: boolean;
+  placeholder: string; multi?: boolean; accentColor?: string;
 }) {
   const [over, setOver] = useState(false);
+  const activeClass: Record<string, string> = {
+    blue: "border-blue-500/50 bg-blue-500/5",
+    emerald: "border-emerald-500/50 bg-emerald-500/5",
+    violet: "border-violet-500/50 bg-violet-500/5",
+  };
+  const pillClass: Record<string, string> = {
+    blue: "bg-blue-600/20 text-blue-300 border-blue-500/20",
+    emerald: "bg-emerald-600/20 text-emerald-300 border-emerald-500/20",
+    violet: "bg-violet-600/20 text-violet-300 border-violet-500/20",
+  };
+
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-1">
         <span className="text-slate-600">{icon}</span>
         <span className="text-[9px] font-semibold text-slate-500 uppercase tracking-wider">{label}</span>
+        {fields.length > 0 && (
+          <button onClick={() => fields.forEach((f) => onRemove(f))}
+            className="ml-auto text-[8px] text-slate-600 hover:text-red-400 transition-colors">clear</button>
+        )}
       </div>
       <div onDragOver={(e) => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)}
         onDrop={(e) => { e.preventDefault(); setOver(false); const c = e.dataTransfer.getData("text/plain"); if (c && !fields.includes(c)) onDrop(c); }}
-        className={cn("min-h-[30px] rounded-lg border-2 border-dashed p-1 transition-all flex flex-wrap gap-1",
-          over ? "border-blue-500/50 bg-blue-500/5" : fields.length > 0 ? "border-slate-700/40 bg-slate-800/20" : "border-slate-700/30")}>
-        {fields.length === 0 && <span className="text-[9px] text-slate-700 px-1">{placeholder}</span>}
+        className={cn(
+          "min-h-[34px] rounded-lg border-2 border-dashed p-1.5 transition-all duration-200 flex flex-wrap gap-1",
+          over ? (activeClass[accentColor] || activeClass.blue)
+            : fields.length > 0 ? "border-slate-700/40 bg-slate-800/20"
+            : "border-slate-700/30 bg-slate-800/5"
+        )}>
+        {fields.length === 0 && <span className="text-[9px] text-slate-700 px-1 italic">{placeholder}</span>}
         {fields.map((f) => (
-          <span key={f} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-600/20 text-[10px] font-medium text-blue-300 border border-blue-500/20">
-            {f}<button onClick={() => onRemove(f)} className="text-blue-400/60 hover:text-red-400"><X className="h-2.5 w-2.5" /></button>
+          <span key={f} className={cn("inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium border transition-all", pillClass[accentColor] || pillClass.blue)}>
+            {f}
+            <button onClick={() => onRemove(f)} className="opacity-60 hover:opacity-100 hover:text-red-400 transition-opacity">
+              <X className="h-2.5 w-2.5" />
+            </button>
           </span>
         ))}
       </div>
@@ -171,13 +199,39 @@ export default function ChartStudio({ columns, rows, connectionId }: {
   const [legend, setLegend] = useState<string[]>([]);
   const [showLegend, setShowLegend] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
+  const [panelCollapsed, setPanelCollapsed] = useState(false);
 
   const resolvedType: ChartType = chartType === "auto" ? autoType : (chartType as ChartType);
 
-  // Result columns with types (THESE are draggable)
+  // ★ CRITICAL FIX: Force ChartRenderer re-render when field wells change.
+  // Without this key, React keeps the same ChartRenderer instance because
+  // columns/rows refs don't change — only xAxis/values props do.
+  // Recharts ResponsiveContainer doesn't always pick up prop changes.
+  const chartKey = useMemo(
+    () => `${chartType}-${xAxis.join(",")}-${values.join(",")}-${legend.join(",")}-${showLegend}-${showGrid}`,
+    [chartType, xAxis, values, legend, showLegend, showGrid]
+  );
+
   const resultCols = useMemo(() => columns.map((c) => ({ name: c, type: getColumnType(c, rows) })), [columns, rows]);
 
-  // Schema tables (reference only — browse, click to copy)
+  const handleDoubleClick = useCallback((colName: string) => {
+    if (xAxis.length === 0) {
+      setXAxis([colName]);
+      toast.success(`${colName} → X-Axis`);
+    } else if (!values.includes(colName) && colName !== xAxis[0]) {
+      setValues((prev) => [...prev, colName]);
+      toast.success(`${colName} → Values`);
+    }
+  }, [xAxis, values]);
+
+  const handleReset = useCallback(() => {
+    setXAxis(columns.length > 0 ? [columns[0]] : []);
+    setValues(columns.slice(1).filter((c) => getColumnType(c, rows) === "numeric").slice(0, 3));
+    setLegend([]);
+    setChartType("auto");
+    toast.success("Reset to auto");
+  }, [columns, rows]);
+
   const { data: schemaData } = useQuery({
     queryKey: ["schema", connectionId],
     queryFn: () => api.get<SchemaResponse>(`/schema/${connectionId}`),
@@ -195,78 +249,108 @@ export default function ChartStudio({ columns, rows, connectionId }: {
   return (
     <div className="flex" style={{ height: "100%" }}>
       {/* ── Left Panel ── */}
-      <div className="w-52 shrink-0 border-r border-slate-700/40 flex flex-col overflow-hidden">
+      <div className={cn(
+        "shrink-0 border-r border-slate-700/40 flex flex-col overflow-hidden transition-all duration-300",
+        panelCollapsed ? "w-10" : "w-56"
+      )}>
+        <button onClick={() => setPanelCollapsed(!panelCollapsed)}
+          className="shrink-0 flex items-center justify-center gap-1 py-1.5 border-b border-slate-700/30 text-slate-500 hover:text-slate-300 hover:bg-slate-700/20 transition-colors">
+          {panelCollapsed
+            ? <PanelLeftOpen className="h-3 w-3" />
+            : <><PanelLeftClose className="h-3 w-3" /><span className="text-[9px]">Collapse</span></>
+          }
+        </button>
 
-        {/* Result Columns (draggable) */}
-        <div className="p-2 border-b border-slate-700/30">
-          <div className="text-[9px] font-semibold text-blue-400 uppercase tracking-wider mb-1.5 px-0.5">
-            Result Columns · drag to wells ↓
-          </div>
-          <div className="space-y-1 max-h-36 overflow-y-auto">
-            {resultCols.map((c) => <DraggableCol key={c.name} name={c.name} type={c.type} />)}
-          </div>
-        </div>
+        {!panelCollapsed && (
+          <>
+            <div className="p-2 border-b border-slate-700/30">
+              <div className="flex items-center justify-between mb-1.5 px-0.5">
+                <span className="text-[9px] font-semibold text-blue-400 uppercase tracking-wider">Result Columns</span>
+                <span className="text-[8px] text-slate-600">{resultCols.length}</span>
+              </div>
+              <div className="space-y-1 max-h-36 overflow-y-auto pr-0.5">
+                {resultCols.map((c) => (
+                  <DraggableCol key={c.name} name={c.name} type={c.type}
+                    onDoubleClick={() => handleDoubleClick(c.name)} />
+                ))}
+              </div>
+              <p className="text-[8px] text-slate-700 mt-1 px-0.5 italic">Drag or double-click to assign</p>
+            </div>
 
-        {/* Field Wells */}
-        <div className="p-2 space-y-2 border-b border-slate-700/30">
-          <FieldWell label="X-Axis" icon={<ArrowRightLeft className="h-2.5 w-2.5" />}
-            fields={xAxis} onDrop={(c) => setXAxis([c])} onRemove={(c) => setXAxis((f) => f.filter((x) => x !== c))}
-            placeholder="Drop dimension" multi={false} />
-          <FieldWell label="Values" icon={<Hash className="h-2.5 w-2.5" />}
-            fields={values} onDrop={(c) => setValues((f) => [...f, c])} onRemove={(c) => setValues((f) => f.filter((x) => x !== c))}
-            placeholder="Drop measures" />
-          <FieldWell label="Legend" icon={<Layers className="h-2.5 w-2.5" />}
-            fields={legend} onDrop={(c) => setLegend([c])} onRemove={(c) => setLegend((f) => f.filter((x) => x !== c))}
-            placeholder="Drop group" multi={false} />
-        </div>
+            <div className="p-2 space-y-2.5 border-b border-slate-700/30">
+              <FieldWell label="X-Axis" icon={<ArrowRightLeft className="h-2.5 w-2.5" />}
+                fields={xAxis} onDrop={(c) => setXAxis([c])} onRemove={(c) => setXAxis((f) => f.filter((x) => x !== c))}
+                placeholder="Drop dimension" multi={false} accentColor="emerald" />
+              <FieldWell label="Values" icon={<Hash className="h-2.5 w-2.5" />}
+                fields={values} onDrop={(c) => setValues((f) => [...f, c])} onRemove={(c) => setValues((f) => f.filter((x) => x !== c))}
+                placeholder="Drop measures" accentColor="blue" />
+              <FieldWell label="Legend" icon={<Layers className="h-2.5 w-2.5" />}
+                fields={legend} onDrop={(c) => setLegend([c])} onRemove={(c) => setLegend((f) => f.filter((x) => x !== c))}
+                placeholder="Drop group-by" multi={false} accentColor="violet" />
+            </div>
 
-        {/* Options */}
-        <div className="p-2 border-b border-slate-700/30 flex items-center gap-3">
-          <label className="flex items-center gap-1 text-[9px] text-slate-500 cursor-pointer">
-            <input type="checkbox" checked={showLegend} onChange={(e) => setShowLegend(e.target.checked)}
-              className="rounded border-slate-600 bg-slate-700 text-blue-500 h-3 w-3" /> Legend
-          </label>
-          <label className="flex items-center gap-1 text-[9px] text-slate-500 cursor-pointer">
-            <input type="checkbox" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)}
-              className="rounded border-slate-600 bg-slate-700 text-blue-500 h-3 w-3" /> Grid
-          </label>
-          <button onClick={() => exportCsv(columns, rows)}
-            className="ml-auto flex items-center gap-0.5 text-[9px] text-slate-600 hover:text-slate-300">
-            <FileDown className="h-2.5 w-2.5" />CSV
-          </button>
-        </div>
+            <div className="p-2 border-b border-slate-700/30 flex items-center gap-3">
+              <label className="flex items-center gap-1 text-[9px] text-slate-500 cursor-pointer select-none">
+                <input type="checkbox" checked={showLegend} onChange={(e) => setShowLegend(e.target.checked)}
+                  className="rounded border-slate-600 bg-slate-700 text-blue-500 h-3 w-3" /> Legend
+              </label>
+              <label className="flex items-center gap-1 text-[9px] text-slate-500 cursor-pointer select-none">
+                <input type="checkbox" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)}
+                  className="rounded border-slate-600 bg-slate-700 text-blue-500 h-3 w-3" /> Grid
+              </label>
+              <button onClick={handleReset}
+                className="ml-auto flex items-center gap-0.5 text-[9px] text-slate-600 hover:text-amber-400 transition-colors" title="Reset">
+                <RotateCcw className="h-2.5 w-2.5" />
+              </button>
+              <button onClick={() => exportCsv(columns, rows)}
+                className="flex items-center gap-0.5 text-[9px] text-slate-600 hover:text-slate-300 transition-colors">
+                <FileDown className="h-2.5 w-2.5" />CSV
+              </button>
+            </div>
 
-        {/* Schema Browser (reference — click to copy) */}
-        <div className="flex-1 overflow-y-auto p-2">
-          <div className="text-[8px] font-semibold text-slate-600 uppercase tracking-wider mb-1 px-0.5">
-            Schema · click to copy
-          </div>
-          {schemaTables.map((t) => <SchemaTree key={t.name} tableName={t.name} columns={t.columns} />)}
-          {schemaTables.length === 0 && <p className="text-[9px] text-slate-700 px-1">Loading schema…</p>}
-        </div>
+            <div className="flex-1 overflow-y-auto p-2">
+              <div className="text-[8px] font-semibold text-slate-600 uppercase tracking-wider mb-1 px-0.5">Schema · click to copy</div>
+              {schemaTables.map((t) => <SchemaTree key={t.name} tableName={t.name} columns={t.columns} />)}
+              {schemaTables.length === 0 && <p className="text-[9px] text-slate-700 px-1 italic">No schema loaded</p>}
+            </div>
+          </>
+        )}
       </div>
 
       {/* ── Right: Chart ── */}
       <div className="flex-1 flex flex-col min-w-0" style={{ height: "100%" }}>
-        {/* Chart Type Bar */}
         <div className="shrink-0 flex items-center gap-1 px-2 py-1.5 border-b border-slate-700/30 overflow-x-auto no-scrollbar">
           {CHART_TYPES.map((ct) => (
             <button key={ct.value} onClick={() => setChartType(ct.value)}
-              className={cn("shrink-0 flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-all",
+              className={cn("shrink-0 flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all",
                 chartType === ct.value ? "bg-blue-600/20 text-blue-300 border border-blue-500/30"
                   : "text-slate-500 hover:text-slate-300 border border-transparent hover:border-slate-600/40")}>
               {ct.icon}{ct.label}
             </button>
           ))}
           <span className="flex-1" />
-          <span className="text-[9px] text-slate-600">{rows.length}r · {chartType === "auto" ? `→${autoType}` : chartType}</span>
+          <span className="text-[9px] text-slate-600 shrink-0">
+            {rows.length}r · {xAxis[0] || "—"} × {values.length || 0}v
+            {chartType === "auto" && <span className="text-slate-700"> → {autoType}</span>}
+          </span>
         </div>
 
-        {/* Chart — explicit min-height so ResponsiveContainer never collapses */}
         <div className="flex-1 p-2" style={{ minHeight: 350 }}>
-          <ChartRenderer chartType={resolvedType} columns={columns} rows={rows}
-            xAxis={xAxis[0]} yAxes={values.length > 0 ? values : undefined}
-            showLegend={showLegend} showGrid={showGrid} height={450} />
+          {values.length === 0 && xAxis.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-center">
+              <Sparkles className="h-8 w-8 text-slate-600 mb-3" />
+              <p className="text-sm text-slate-400 font-medium">Configure your chart</p>
+              <p className="text-xs text-slate-500 mt-1 max-w-sm">
+                Drag columns into the field wells or double-click to auto-assign.
+              </p>
+            </div>
+          ) : (
+            <ChartRenderer
+              key={chartKey}
+              chartType={resolvedType} columns={columns} rows={rows}
+              xAxis={xAxis[0]} yAxes={values.length > 0 ? values : undefined}
+              showLegend={showLegend} showGrid={showGrid} height={450} />
+          )}
         </div>
       </div>
     </div>

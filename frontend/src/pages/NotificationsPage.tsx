@@ -69,8 +69,8 @@ function CreatePlatformModal({ onClose, onCreated }: { onClose: () => void; onCr
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative w-full max-w-md bg-slate-800 border border-slate-700/60 rounded-2xl shadow-2xl">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-md glass-strong rounded-2xl shadow-2xl animate-page-in">
         <div className="flex items-center justify-between p-5 border-b border-slate-700/40">
           <h2 className="text-base font-semibold text-white flex items-center gap-2">
             <Bell className="h-4 w-4 text-blue-400" />Add Notification Platform
@@ -137,7 +137,12 @@ export default function NotificationsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-2"><Bell className="h-6 w-6 text-blue-400" />Notification Platforms</h1>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+            <span className="p-2 rounded-xl bg-gradient-to-br from-blue-500/20 to-indigo-500/10 border border-blue-500/15">
+              <Bell className="h-5 w-5 text-blue-400" />
+            </span>
+            Notification Platforms
+          </h1>
           <p className="text-sm text-slate-400 mt-1">Manage notification delivery channels</p>
         </div>
         <div className="flex gap-2">
@@ -148,10 +153,25 @@ export default function NotificationsPage() {
 
       {error && <Alert variant="error">{error instanceof ApiRequestError ? error.message : "Failed to load"}</Alert>}
 
-      {isLoading && <Card className="p-12"><div className="flex items-center justify-center gap-3"><Loader2 className="h-5 w-5 text-blue-400 animate-spin" /><span className="text-sm text-slate-400">Loading…</span></div></Card>}
+      {isLoading && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {[1,2,3,4].map((i) => (
+            <Card key={i} className="p-4"><div className="animate-skeleton rounded h-20 bg-slate-700/30" /></Card>
+          ))}
+        </div>
+      )}
 
       {!isLoading && platforms.length === 0 && (
-        <Card className="p-12"><div className="text-center"><Bell className="h-8 w-8 text-slate-600 mx-auto mb-3" /><p className="text-sm text-slate-400">No platforms configured</p><p className="text-xs text-slate-500 mt-1">Add Slack, Email, Teams, or Webhook platforms</p></div></Card>
+        <Card className="p-12">
+          <div className="text-center">
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500/10 to-indigo-500/5 border border-blue-500/10 flex items-center justify-center mx-auto mb-4">
+              <Bell className="h-8 w-8 text-slate-600" />
+            </div>
+            <p className="text-sm font-medium text-slate-300">No platforms configured</p>
+            <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">Add Slack, Email, Teams, or Webhook platforms to enable notification delivery.</p>
+            <Button size="sm" icon={<Plus className="h-3.5 w-3.5" />} onClick={() => setShowCreate(true)} className="mt-4">Add Platform</Button>
+          </div>
+        </Card>
       )}
 
       {platforms.length > 0 && (

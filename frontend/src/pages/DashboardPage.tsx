@@ -39,11 +39,49 @@ import type { QueryRequest, QueryResponse } from "@/types/query";
 
 const DEFAULT_BRANDING = { companyName: "Smart BI Agent", logoUrl: "", tagline: "AI-Powered Business Intelligence" };
 
+type BrandingType = typeof DEFAULT_BRANDING;
+
 function useBranding() {
   const [branding, setBranding] = useState(DEFAULT_BRANDING);
-  useEffect(() => { try { const s = sessionStorage.getItem("sbi_branding"); if (s) setBranding(JSON.parse(s)); } catch {} }, []);
-  const update = (b: typeof DEFAULT_BRANDING) => { setBranding(b); try { sessionStorage.setItem("sbi_branding", JSON.stringify(b)); } catch {} };
-  return { branding, update };
+  const [loaded, setLoaded] = useState(false);
+
+  // Load from API on mount, fall back to sessionStorage
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get<{ branding: { company_name: string; logo_url: string; tagline: string } }>("/settings/branding");
+        if (!cancelled && res.branding) {
+          const b: BrandingType = {
+            companyName: res.branding.company_name,
+            logoUrl: res.branding.logo_url,
+            tagline: res.branding.tagline,
+          };
+          setBranding(b);
+        }
+      } catch {
+        // API not available yet — try sessionStorage fallback
+        try { const s = sessionStorage.getItem("sbi_branding"); if (s) setBranding(JSON.parse(s)); } catch {}
+      }
+      if (!cancelled) setLoaded(true);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const update = async (b: BrandingType) => {
+    setBranding(b);
+    // Persist to both API and sessionStorage (fallback)
+    try { sessionStorage.setItem("sbi_branding", JSON.stringify(b)); } catch {}
+    try {
+      await api.put("/settings/branding", {
+        company_name: b.companyName,
+        logo_url: b.logoUrl,
+        tagline: b.tagline,
+      });
+    } catch {}
+  };
+
+  return { branding, update, loaded };
 }
 
 // ─── Animated Stat Card ─────────────────────────────────────────────────────

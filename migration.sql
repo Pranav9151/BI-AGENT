@@ -300,3 +300,33 @@ CREATE TABLE platform_user_mappings (
 INSERT INTO alembic_version (version_num) VALUES ('3d18d54d005c') RETURNING alembic_version.version_num;
 
 COMMIT;
+-- Phase 8: Settings & Dashboards
+
+CREATE TABLE platform_settings (
+    key VARCHAR(100) NOT NULL,
+    value TEXT NOT NULL DEFAULT '{}',
+    updated_by UUID,
+    id UUID DEFAULT gen_random_uuid() NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT uq_platform_settings_key UNIQUE (key),
+    FOREIGN KEY(updated_by) REFERENCES users (id) ON DELETE SET NULL
+);
+
+CREATE INDEX ix_platform_settings_key ON platform_settings (key);
+
+CREATE TABLE dashboards (
+    user_id UUID NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    is_default BOOLEAN DEFAULT FALSE NOT NULL,
+    id UUID DEFAULT gen_random_uuid() NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+    PRIMARY KEY (id),
+    FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+);
+
+CREATE INDEX ix_dashboards_user_id ON dashboards (user_id);

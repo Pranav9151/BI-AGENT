@@ -26,6 +26,8 @@ from app.api.v1.routes_permissions import router as permissions_router
 from app.api.v1.routes_export import router as export_router
 from app.api.v1.routes_integrations import router as integrations_router
 from app.api.v1.routes_audit import router as audit_router
+from app.api.v1.routes_settings import router as settings_router
+from app.api.v1.routes_dashboards import router as dashboards_router
 
 router.include_router(auth_router,          prefix="/auth",           tags=["auth"])
 router.include_router(users_router,         prefix="/users",          tags=["users"])
@@ -41,3 +43,5 @@ router.include_router(permissions_router,   prefix="/permissions",    tags=["per
 router.include_router(export_router,        prefix="/export",         tags=["export"])
 router.include_router(integrations_router,  prefix="/integrations",   tags=["integrations"])
 router.include_router(audit_router,         prefix="/audit",          tags=["audit"])
+router.include_router(settings_router,      prefix="/settings",       tags=["settings"])
+router.include_router(dashboards_router,    prefix="/dashboards",     tags=["dashboards"])

@@ -47,8 +47,10 @@ from app.dependencies import (
     get_db,
     get_key_manager,
     get_redis_cache,
+    get_redis_coordination,
     require_analyst_or_above,
 )
+from app.security.token_budget import check_token_budget, record_token_usage
 from app.errors.exceptions import (
     InputTooLongError,
     LLMProviderError,
@@ -366,6 +368,7 @@ async def execute_query(
     db: AsyncSession = Depends(get_db),
     key_manager=Depends(get_key_manager),
     redis=Depends(get_redis_cache),
+    redis_coord=Depends(get_redis_coordination),
     audit=Depends(get_audit_writer),
 ) -> QueryResponse:
     """
@@ -461,6 +464,24 @@ async def execute_query(
             conversation_context = _build_conversation_context(sanitized)
 
     # ── Step 5: Build prompt and call LLM ────────────────────────────────
+
+    # Token budget check (T — denial-of-wallet prevention)
+    try:
+        allowed, tokens_used, daily_limit = await check_token_budget(
+            user_id=user_id,
+            redis=redis_coord,
+        )
+        if not allowed:
+            raise ValidationError(
+                message=f"Daily token budget exceeded ({tokens_used:,}/{daily_limit:,}). Try again tomorrow or contact admin.",
+                detail=f"Token budget exhausted for user {user_id}",
+            )
+    except ValidationError:
+        raise
+    except Exception as exc:
+        # Budget check failed — fail open (don't block users on Redis errors)
+        log.warning("query.token_budget_check_failed", user_id=user_id, error=str(exc))
+
     system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
         schema_context=schema_context,
         conversation_context=conversation_context,
@@ -473,6 +494,17 @@ async def execute_query(
     )
 
     llm_response = await generate_with_fallback(llm_request, db, key_manager)
+
+    # Record token usage for budget tracking
+    if llm_response.total_tokens > 0:
+        try:
+            await record_token_usage(
+                user_id=user_id,
+                tokens=llm_response.total_tokens,
+                redis=redis_coord,
+            )
+        except Exception as exc:
+            log.warning("query.token_record_failed", user_id=user_id, error=str(exc))
 
     # ── Step 6: Extract and validate SQL ─────────────────────────────────
     raw_sql = _extract_sql_from_response(llm_response.content)

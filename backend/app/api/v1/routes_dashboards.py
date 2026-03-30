@@ -205,6 +205,7 @@ async def delete_dashboard(
     if not dashboard:
         raise ResourceNotFoundError(message="Dashboard not found.")
 
+
     await db.delete(dashboard)
     await db.commit()
     log.info("dashboard.deleted", dashboard_id=dashboard_id, user_id=current_user["user_id"])

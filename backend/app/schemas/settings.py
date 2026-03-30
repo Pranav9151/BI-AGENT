@@ -1,7 +1,9 @@
-"""Smart BI Agent — Settings & Dashboard Schemas (Phase 8)"""
+"""Smart BI Agent — Settings & Dashboard Schemas (Phase 9.5)
+Upgraded: Flexible widget config for Canvas Studio v4
+"""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 
@@ -20,27 +22,45 @@ class BrandingResponse(BaseModel):
 # ─── Dashboards ──────────────────────────────────────────────────────────────
 
 class DashboardWidgetSchema(BaseModel):
+    """Flexible widget schema — supports both legacy and Canvas Studio v4 formats."""
     id: str
-    query_id: str
-    query_name: str
-    question: str
-    connection_id: str
+    # Legacy fields (optional for backward compat)
+    query_id: Optional[str] = None
+    query_name: Optional[str] = None
+    question: Optional[str] = None
+    connection_id: Optional[str] = None
     chart_type: str = "auto"
-    title: str
+    title: str = "Untitled"
     size: str = "md"
+    # Canvas Studio v4 fields
+    mode: Optional[str] = None  # "fields" | "nlq"
+    x_axis: Optional[dict[str, Any]] = None
+    values_fields: Optional[list[dict[str, Any]]] = None
+    legend: Optional[dict[str, Any]] = None
+    nl_question: Optional[str] = None
+    generated_sql: Optional[str] = None
+
+    model_config = {"extra": "allow"}  # Accept any extra fields
 
 
 class DashboardConfigSchema(BaseModel):
+    """Flexible config — accepts any JSON structure for maximum forward-compat."""
     title: str = Field(default="My Dashboard", max_length=255)
     description: str = Field(default="", max_length=500)
     widgets: list[DashboardWidgetSchema] = []
-    columns: int = Field(default=2, ge=1, le=4)
+    columns: int = Field(default=12, ge=1, le=12)
+    # Canvas Studio v4 fields
+    connection_id: Optional[str] = None
+    department: Optional[str] = None
+
+    model_config = {"extra": "allow"}
 
 
 class DashboardCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     config: DashboardConfigSchema
+    department: Optional[str] = None
 
 
 class DashboardUpdateRequest(BaseModel):
@@ -48,6 +68,7 @@ class DashboardUpdateRequest(BaseModel):
     description: Optional[str] = None
     config: Optional[DashboardConfigSchema] = None
     is_default: Optional[bool] = None
+    department: Optional[str] = None
 
 
 class DashboardResponse(BaseModel):

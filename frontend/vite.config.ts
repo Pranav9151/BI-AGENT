@@ -25,5 +25,16 @@ export default defineConfig({
   build: {
     outDir: "dist",
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "vendor-react": ["react", "react-dom", "react-router-dom"],
+          "vendor-charts": ["recharts"],
+          "vendor-table": ["@tanstack/react-table", "@tanstack/react-query"],
+          "vendor-editor": ["monaco-editor"],
+          "vendor-ui": ["lucide-react", "sonner", "zustand"],
+        },
+      },
+    },
   },
 });

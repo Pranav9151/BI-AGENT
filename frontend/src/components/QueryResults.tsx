@@ -191,10 +191,11 @@ interface ChartRendererProps {
   showGrid?: boolean;
   height?: number;
   fillContainer?: boolean;
+  onDataClick?: (label: string, column: string) => void;
 }
 
 export function ChartRenderer({
-  chartType, columns, rows, xAxis, yAxes, showLegend = true, showGrid = true, height = 380, fillContainer = false,
+  chartType, columns, rows, xAxis, yAxes, showLegend = true, showGrid = true, height = 380, fillContainer = false, onDataClick,
 }: ChartRendererProps) {
   const chartRef = useRef<HTMLDivElement>(null);
 
@@ -244,7 +245,9 @@ export function ChartRenderer({
             <Pie data={data} dataKey={primaryKey} nameKey="name" cx="50%" cy="50%"
               outerRadius={Math.min(height * 0.35, 130)} innerRadius={Math.min(height * 0.18, 55)} paddingAngle={2}
               label={({ name, percent }) => `${String(name).slice(0, 15)} (${(percent * 100).toFixed(0)}%)`}
-              labelLine={{ stroke: "#475569", strokeWidth: 1 }}>
+              labelLine={{ stroke: "#475569", strokeWidth: 1 }}
+              onClick={(entry) => { if (onDataClick && entry?.name) onDataClick(String(entry.name), labelKey); }}
+              className={onDataClick ? "cursor-pointer" : ""}>
               {data.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
             </Pie>
             <Tooltip content={<ChartTooltip />} />
@@ -306,13 +309,15 @@ export function ChartRenderer({
             {showLegend && valueKeys.length > 1 && <Legend wrapperStyle={{ fontSize: 11, color: "#94a3b8" }} iconSize={8} />}
           </LineChart>
         ) : (
-          <BarChart data={data} margin={{ top: 10, right: 20, bottom: 20, left: 10 }}>
+          <BarChart data={data} margin={{ top: 10, right: 20, bottom: 20, left: 10 }}
+            onClick={(e) => { if (onDataClick && e?.activeLabel) onDataClick(String(e.activeLabel), labelKey); }}>
             <CartesianGrid {...gridProps} />
             <XAxis dataKey="name" tick={xTickProps} angle={-25} textAnchor="end" height={60} axisLine={{ stroke: "#334155" }} />
             <YAxis tick={yTickProps} axisLine={{ stroke: "#334155" }} tickFormatter={yFmt} />
-            <Tooltip content={<ChartTooltip />} />
+            <Tooltip content={<ChartTooltip />} cursor={{ fill: "rgba(59, 130, 246, 0.08)" }} />
             {valueKeys.map((key, i) => (
-              <Bar key={key} dataKey={key} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[4, 4, 0, 0]} maxBarSize={50} />
+              <Bar key={key} dataKey={key} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[4, 4, 0, 0]} maxBarSize={50}
+                className={onDataClick ? "cursor-pointer" : ""} />
             ))}
             {showLegend && valueKeys.length > 1 && <Legend wrapperStyle={{ fontSize: 11, color: "#94a3b8" }} iconSize={8} />}
           </BarChart>

@@ -134,6 +134,47 @@ function QuickAction({ icon, label, desc, onClick, delay = 0 }: {
 
 // ─── Live Query Widget ──────────────────────────────────────────────────────
 
+function StudioDashboards() {
+  const navigate = useNavigate();
+  const { data } = useQuery({
+    queryKey: ["dashboards-home"],
+    queryFn: () => api.get<{ dashboards: Array<{ dashboard_id: string; name: string; description: string; config: any; updated_at: string }> }>("/dashboards/"),
+  });
+
+  const dashboards = data?.dashboards ?? [];
+  if (dashboards.length === 0) return null;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-slate-300 flex items-center gap-1.5"><Palette className="h-3.5 w-3.5 text-violet-400" />Your Dashboards</h2>
+        <button onClick={() => navigate("/studio")} className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors">Open Studio</button>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {dashboards.slice(0, 4).map((d) => {
+          const widgetCount = d.config?.widgets?.length ?? 0;
+          const updated = new Date(d.updated_at).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+          return (
+            <button key={d.dashboard_id} onClick={() => navigate("/studio")}
+              className="flex items-center gap-3 p-3 rounded-xl border border-slate-700/25 bg-slate-800/15 hover:border-violet-500/25 hover:bg-violet-500/5 transition-all duration-200 text-left group">
+              <div className="p-2 rounded-lg bg-violet-500/10 text-violet-400 group-hover:bg-violet-500/15 transition-all shrink-0">
+                <Palette className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium text-slate-200 truncate group-hover:text-white transition-colors">{d.name}</p>
+                <p className="text-[10px] text-slate-600">{widgetCount} visual{widgetCount !== 1 ? "s" : ""} · {updated}</p>
+              </div>
+              <ChevronRight className="h-3 w-3 text-slate-700 group-hover:text-violet-400 transition-colors shrink-0" />
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Live Query Widget ──────────────────────────────────────────────────────
+
 function QueryWidget({ query }: { query: SavedQuery }) {
   const [result, setResult] = useState<QueryResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -274,20 +315,25 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* ── Quick Actions + Recent ── */}
+      {/* ── Quick Actions + Studio Dashboards + Recent ── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        <div className="lg:col-span-2 space-y-3">
-          <h2 className="text-sm font-semibold text-slate-300">Quick Actions</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            <QuickAction icon={<MessageSquare className="h-4 w-4" />} label="AI Query" desc="Ask in plain English · Ctrl+Q" onClick={() => navigate("/query")} delay={300} />
-            <QuickAction icon={<Palette className="h-4 w-4" />} label="Dashboard Studio" desc="Build custom dashboards · Ctrl+Shift+S" onClick={() => navigate("/studio")} delay={350} />
-            <QuickAction icon={<HardDrive className="h-4 w-4" />} label="Schema Browser" desc="Explore tables · Ctrl+Shift+B" onClick={() => navigate("/schema-browser")} delay={400} />
-            <QuickAction icon={<Bookmark className="h-4 w-4" />} label="Saved Queries" desc="Your query library" onClick={() => navigate("/saved-queries")} delay={450} />
-            {isAdmin && <>
-              <QuickAction icon={<Shield className="h-4 w-4" />} label="Permissions" desc="Manage data access" onClick={() => navigate("/admin/permissions")} delay={500} />
-              <QuickAction icon={<Activity className="h-4 w-4" />} label="Monitoring" desc="Health & audit logs" onClick={() => navigate("/monitoring")} delay={550} />
-            </>}
+        <div className="lg:col-span-2 space-y-5">
+          <div className="space-y-3">
+            <h2 className="text-sm font-semibold text-slate-300">Quick Actions</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <QuickAction icon={<MessageSquare className="h-4 w-4" />} label="AI Query" desc="Ask in plain English · Ctrl+Q" onClick={() => navigate("/query")} delay={300} />
+              <QuickAction icon={<Palette className="h-4 w-4" />} label="Dashboard Studio" desc="Build Power BI-style dashboards" onClick={() => navigate("/studio")} delay={350} />
+              <QuickAction icon={<HardDrive className="h-4 w-4" />} label="Schema Browser" desc="Explore tables & columns" onClick={() => navigate("/schema-browser")} delay={400} />
+              <QuickAction icon={<Bookmark className="h-4 w-4" />} label="Saved Queries" desc="Your query library" onClick={() => navigate("/saved-queries")} delay={450} />
+              {isAdmin && <>
+                <QuickAction icon={<Shield className="h-4 w-4" />} label="Permissions" desc="Manage data access" onClick={() => navigate("/admin/permissions")} delay={500} />
+                <QuickAction icon={<Activity className="h-4 w-4" />} label="Monitoring" desc="Health & audit logs" onClick={() => navigate("/monitoring")} delay={550} />
+              </>}
+            </div>
           </div>
+
+          {/* Studio Dashboards */}
+          <StudioDashboards />
         </div>
 
         <div className="space-y-3">

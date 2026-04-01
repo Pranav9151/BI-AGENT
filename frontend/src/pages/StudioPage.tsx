@@ -564,15 +564,6 @@ export default function StudioPage() {
   const [autoRefresh, setAutoRefresh] = useState(0);
   const [drillDown, setDrillDown] = useState<{ label: string; column: string } | null>(null); // seconds, 0 = off
 
-  // Auto-refresh timer
-  useEffect(() => {
-    if (autoRefresh <= 0 || dashboard.widgets.length === 0) return;
-    const timer = setInterval(() => {
-      dashboard.widgets.forEach((w) => { if (w.result || w.generatedSql || w.nlQuestion) runWidget(w.id); });
-    }, autoRefresh * 1000);
-    return () => clearInterval(timer);
-  }, [autoRefresh, dashboard.widgets.length]); // eslint-disable-line
-
   // Auto-collapse sidebar
   const prevCollapsed = useRef(sidebar.collapsed);
   useEffect(() => {
@@ -580,39 +571,6 @@ export default function StudioPage() {
     if (!sidebar.collapsed) sidebar.setCollapsed(true);
     return () => { sidebar.setCollapsed(prevCollapsed.current); };
   }, []); // eslint-disable-line
-
-  // Keyboard shortcuts for Studio
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      // Ctrl+S — Save dashboard
-      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-        e.preventDefault();
-        handleSave();
-        return;
-      }
-      // Delete — Remove selected widget
-      if (e.key === "Delete" && selWidgetId && !e.ctrlKey && !e.metaKey) {
-        const target = e.target as HTMLElement;
-        if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return;
-        e.preventDefault();
-        removeWidget(selWidgetId);
-        return;
-      }
-      // Ctrl+D — Duplicate selected widget
-      if ((e.ctrlKey || e.metaKey) && e.key === "d" && selWidgetId) {
-        e.preventDefault();
-        duplicateWidget(selWidgetId);
-        return;
-      }
-      // Escape — Deselect widget or exit preview
-      if (e.key === "Escape") {
-        if (preview) { setPreview(false); return; }
-        if (selWidgetId) { setSelWidgetId(null); return; }
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [selWidgetId, preview, handleSave, removeWidget, duplicateWidget]);
 
   // ── Data Fetching ──
   const { data: connData } = useQuery({ queryKey: ["connections"], queryFn: () => api.get<ConnectionListResponse>("/connections/") });
@@ -876,6 +834,46 @@ export default function StudioPage() {
       }
     } catch { toast.error("AI generation failed"); }
   }, [aiPrompt, dashboard.connectionId, runWidget]);
+
+  // ── Effects that depend on callbacks — must live AFTER all useCallback declarations ──
+
+  // Auto-refresh timer (depends on runWidget)
+  useEffect(() => {
+    if (autoRefresh <= 0 || dashboard.widgets.length === 0) return;
+    const timer = setInterval(() => {
+      dashboard.widgets.forEach((w) => { if (w.result || w.generatedSql || w.nlQuestion) runWidget(w.id); });
+    }, autoRefresh * 1000);
+    return () => clearInterval(timer);
+  }, [autoRefresh, dashboard.widgets.length]); // eslint-disable-line
+
+  // Keyboard shortcuts (depends on handleSave, removeWidget, duplicateWidget)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        e.preventDefault();
+        handleSave();
+        return;
+      }
+      if (e.key === "Delete" && selWidgetId && !e.ctrlKey && !e.metaKey) {
+        const target = e.target as HTMLElement;
+        if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return;
+        e.preventDefault();
+        removeWidget(selWidgetId);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "d" && selWidgetId) {
+        e.preventDefault();
+        duplicateWidget(selWidgetId);
+        return;
+      }
+      if (e.key === "Escape") {
+        if (preview) { setPreview(false); return; }
+        if (selWidgetId) { setSelWidgetId(null); return; }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selWidgetId, preview, handleSave, removeWidget, duplicateWidget]);
 
   const selWidget = dashboard.widgets.find((w) => w.id === selWidgetId);
 

@@ -183,3 +183,29 @@ class TOTPConfirmResponse(BaseModel):
         "TOTP successfully enabled. "
         "Your next login will require your authenticator code."
     )
+
+
+# =============================================================================
+# Self-Registration
+# =============================================================================
+
+class RegisterRequest(BaseModel):
+    """POST /api/v1/auth/register — Self-service registration with domain check."""
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    email: EmailStr = Field(..., description="Company email address")
+    name: str = Field(..., min_length=1, max_length=100, description="Full name")
+    password: str = Field(..., min_length=8, max_length=128, description="Password (min 8 chars)")
+    department: Optional[str] = Field(None, max_length=100, description="Department (optional)")
+
+    @field_validator("password")
+    @classmethod
+    def password_strong(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return v
+
+
+class RegisterResponse(BaseModel):
+    message: str = "Registration successful. Please wait for admin approval before logging in."
+    user_id: str

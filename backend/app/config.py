@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     REDIS_DB_COORDINATION: int = 2   # DB 2: Coordination (volatile-lru)
 
     # =========================================================================
+    # Registration — Domain Restriction
+    # =========================================================================
+    ALLOWED_EMAIL_DOMAINS: str = ""  # Comma-separated: "xyz.com,company.org". Empty = open registration.
+
+    # =========================================================================
     # Encryption — HKDF Master Key (T1, T2)
     # =========================================================================
     ENCRYPTION_MASTER_KEY: str

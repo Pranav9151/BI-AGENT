@@ -12,13 +12,9 @@ export default defineConfig({
   },
 
   // ── Monaco Web Worker fix ──────────────────────────────────────────────────
-  // Monaco spins up Web Workers for language services (JSON, TypeScript, CSS).
-  // Without this, Vite can't resolve the worker entry points, so Monaco silently
-  // falls back to the CDN — which then gets blocked by CSP or CORS, crashing
-  // the entire React tree with a blank page.
-  //
-  // This tells Vite to treat monaco-editor worker files as assets and serve them
-  // from the local bundle, bypassing the CDN entirely.
+  // Without this, Vite can't resolve Monaco's worker entry points and falls
+  // back to fetching them from CDN — which gets blocked by CSP, crashing the
+  // React tree with a blank page.
   optimizeDeps: {
     include: ["monaco-editor/esm/vs/editor/editor.worker"],
     exclude: ["@monaco-editor/react"],

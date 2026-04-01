@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation, Link } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -112,10 +112,11 @@ export default function LoginPage() {
           </form>
 
           <div className="mt-5 pt-4 border-t border-slate-700/40">
-            <p className="text-xs text-slate-500 text-center leading-relaxed">
-              Registration is by administrator invitation only.
-              <br />
-              Contact your admin for access.
+            <p className="text-xs text-slate-500 text-center">
+              Don&apos;t have an account?{" "}
+              <Link to="/register" className="text-blue-400 hover:text-blue-300 transition-colors">
+                Register with company email
+              </Link>
             </p>
           </div>
         </CardContent>

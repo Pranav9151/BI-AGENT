@@ -12,6 +12,7 @@
  */
 
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import Editor from "@monaco-editor/react";
 import {
@@ -28,7 +29,6 @@ import { api, ApiRequestError, triggerBlobDownload } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button, Card, Alert, Input, Select } from "@/components/ui";
 import { ResultsTable, AutoChart } from "@/components/QueryResults";
-import ChartStudio from "@/components/ChartStudio";
 import type { ConnectionListResponse } from "@/types/connections";
 import type { QueryRequest, QueryResponse, SuggestionsResponse, SuggestionCategory } from "@/types/query";
 import type { SavedQueryCreateRequest } from "@/types/saved-queries";
@@ -61,7 +61,7 @@ const COLOR_MAP: Record<string, string> = {
 
 interface ChatEntry { question: string; response: QueryResponse; }
 
-type TabId = "table" | "chart" | "studio" | "sql";
+type TabId = "table" | "chart" | "sql";
 
 // ─── Copy Button ────────────────────────────────────────────────────────────
 
@@ -161,6 +161,7 @@ function SuggestionCard({ category, onSelect }: { category: SuggestionCategory; 
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 export default function QueryPage() {
+  const navigate = useNavigate();
   const [question, setQuestion] = useState("");
   const [selectedConnection, setSelectedConnection] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -221,7 +222,7 @@ export default function QueryPage() {
   return (
     <div className={cn(
       "flex flex-col overflow-hidden",
-      expanded ? "fixed inset-0 z-40 bg-slate-900 p-3" : "h-[calc(100vh-6.5rem)]",
+      expanded ? "fixed inset-0 z-40 bg-slate-900 p-3" : "absolute inset-0 p-3 lg:p-4",
     )}>
       {/* ── Row 1: Compact Query Bar ── */}
       <div className="shrink-0 flex items-center gap-2 mb-2">
@@ -342,7 +343,6 @@ export default function QueryPage() {
                   {([
                     { id: "table" as TabId, label: "Table", icon: <Table2 className="h-3 w-3" /> },
                     { id: "chart" as TabId, label: "Chart", icon: <BarChart3 className="h-3 w-3" /> },
-                    { id: "studio" as TabId, label: "Studio", icon: <Palette className="h-3 w-3" /> },
                     { id: "sql" as TabId, label: "SQL", icon: <Code2 className="h-3 w-3" /> },
                   ]).map((tab) => (
                     <button key={tab.id} onClick={() => setActiveTab(tab.id)}
@@ -355,6 +355,12 @@ export default function QueryPage() {
 
                 <div className="flex items-center gap-1">
                   {activeTab === "sql" && <CopyButton text={activeResult.sql} />}
+
+                  <button onClick={() => navigate("/studio")}
+                    className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium text-violet-400 hover:text-violet-300 hover:bg-violet-500/10 border border-violet-500/20 transition-colors"
+                    title="Open in Dashboard Studio">
+                    <Palette className="h-3 w-3" />Studio
+                  </button>
 
                   <button onClick={() => setShowSaveModal(true)}
                     className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-700/50 transition-colors">
@@ -399,9 +405,6 @@ export default function QueryPage() {
                   <div className="p-4 h-full overflow-y-auto">
                     <AutoChart columns={activeResult.columns} rows={activeResult.rows} fillContainer />
                   </div>
-                )}
-                {activeTab === "studio" && (
-                  <ChartStudio columns={activeResult.columns} rows={activeResult.rows} connectionId={selectedConnection} />
                 )}
                 {activeTab === "sql" && (
                   <div className="h-full bg-[#1e1e1e] relative">

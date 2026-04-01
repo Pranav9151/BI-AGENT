@@ -285,7 +285,7 @@ async def create_user(
         role=body.role.value,
         department=body.department,
         is_active=True,
-        is_approved=False,   # Requires admin approval after creation (T53)
+        is_approved=True,    # Admin-created users are pre-approved
         totp_enabled=False,
     )
     # Set timestamps explicitly for test compatibility

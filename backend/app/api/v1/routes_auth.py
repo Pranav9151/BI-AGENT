@@ -62,6 +62,8 @@ from app.schemas.auth import (
     LoginResponse,
     MeResponse,
     RefreshResponse,
+    RegisterRequest,
+    RegisterResponse,
     TOTPConfirmRequest,
     TOTPConfirmResponse,
     TOTPSetupResponse,
@@ -78,7 +80,7 @@ from app.security.auth import (
 )
 from app.security.lockout import AccountLockedError as LockoutAccountLockedError
 from app.security.lockout import LockoutManager
-from app.security.password import verify_password
+from app.security.password import verify_password, hash_password
 from app.security.totp import (
     decrypt_totp_secret,
     encrypt_totp_secret,
@@ -762,3 +764,68 @@ async def totp_confirm(
         )
 
     return TOTPConfirmResponse()
+
+
+# =============================================================================
+# Self-Registration
+# =============================================================================
+
+@router.post(
+    "/register",
+    response_model=RegisterResponse,
+    status_code=201,
+    summary="Self-register with company email",
+)
+async def register(
+    body: RegisterRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Self-service registration.
+
+    - Validates email domain against ALLOWED_EMAIL_DOMAINS env var (comma-separated)
+    - If no domains configured, registration is open
+    - New users are created with role=viewer, is_approved=False
+    - Admin must approve before the user can login
+    """
+    from app.config import get_settings
+    settings = get_settings()
+
+    # Domain validation
+    allowed_domains_str = getattr(settings, "allowed_email_domains", "") or ""
+    if allowed_domains_str:
+        allowed = [d.strip().lower() for d in allowed_domains_str.split(",") if d.strip()]
+        email_domain = body.email.lower().split("@")[-1]
+        if allowed and email_domain not in allowed:
+            raise AuthenticationError(
+                message=f"Registration is restricted to company email domains. Allowed: {', '.join(allowed)}",
+            )
+
+    # Check duplicate
+    dup = await db.execute(select(User).where(User.email == body.email.lower()))
+    if dup.scalar_one_or_none() is not None:
+        raise AuthenticationError(message="An account with this email already exists.")
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    new_user = User(
+        id=uuid.uuid4(),
+        email=body.email.lower(),
+        name=body.name,
+        hashed_password=hash_password(body.password),
+        role="viewer",
+        department=body.department,
+        is_active=True,
+        is_approved=False,  # Admin must approve
+        totp_enabled=False,
+    )
+    new_user.created_at = now
+    new_user.updated_at = now
+
+    db.add(new_user)
+    await db.commit()
+
+    log.info("auth.register", email=new_user.email, user_id=str(new_user.id))
+
+    return RegisterResponse(user_id=str(new_user.id))

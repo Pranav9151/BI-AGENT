@@ -21,6 +21,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, PieChart, Pie, Cell, Legend, AreaChart, Area,
   ScatterChart, Scatter, ZAxis,
+  RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
 } from "recharts";
 import { ChevronDown, ChevronUp, BarChart3, TrendingUp, TrendingDown, Minus, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -46,7 +47,7 @@ export const CHART_TYPE_OPTIONS = [
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-export type ChartType = "bar" | "horizontal_bar" | "stacked_bar" | "line" | "area" | "pie" | "scatter" | "scorecard" | "none";
+export type ChartType = "bar" | "horizontal_bar" | "stacked_bar" | "line" | "area" | "pie" | "scatter" | "radar" | "scorecard" | "none";
 
 export function toNumber(val: unknown): number | null {
   if (typeof val === "number") return val;
@@ -261,7 +262,8 @@ export function ChartRenderer({
             <Tooltip content={<ChartTooltip />} />
             {valueKeys.map((key, i) => (
               <Area key={key} type="monotone" dataKey={key} stroke={CHART_COLORS[i % CHART_COLORS.length]}
-                fill={CHART_COLORS[i % CHART_COLORS.length]} fillOpacity={0.15} strokeWidth={2} />
+                fill={CHART_COLORS[i % CHART_COLORS.length]} fillOpacity={0.15} strokeWidth={2}
+                animationDuration={400} animationEasing="ease-out" />
             ))}
             {showLegend && valueKeys.length > 1 && <Legend wrapperStyle={{ fontSize: 11, color: "#94a3b8" }} iconSize={8} />}
           </AreaChart>
@@ -317,7 +319,7 @@ export function ChartRenderer({
             <Tooltip content={<ChartTooltip />} cursor={{ fill: "rgba(59, 130, 246, 0.08)" }} />
             {valueKeys.map((key, i) => (
               <Bar key={key} dataKey={key} fill={CHART_COLORS[i % CHART_COLORS.length]} radius={[4, 4, 0, 0]} maxBarSize={50}
-                className={onDataClick ? "cursor-pointer" : ""} />
+                className={onDataClick ? "cursor-pointer" : ""} animationDuration={400} animationEasing="ease-out" />
             ))}
             {showLegend && valueKeys.length > 1 && <Legend wrapperStyle={{ fontSize: 11, color: "#94a3b8" }} iconSize={8} />}
           </BarChart>

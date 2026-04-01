@@ -28,7 +28,7 @@ import {
   Database, Type, Calendar, Sparkles, Send,
   Maximize2, Target, Triangle, Activity, Grid3x3, Gauge,
   Save, FolderOpen, PlusCircle, MoreVertical,
-  Lightbulb, MessageSquare, Wand2,
+  Lightbulb, MessageSquare, Wand2, Link2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -42,7 +42,10 @@ import {
 import { GaugeChart } from "@/components/charts/GaugeChart";
 import { WaterfallChart } from "@/components/charts/WaterfallChart";
 import { FunnelChart } from "@/components/charts/FunnelChart";
-import { useSidebar } from "@/components/AppShell";
+import { SkeletonChart, chartTypeToSkeleton } from "@/components/SkeletonChart";
+import { DrillDownModal } from "@/components/DrillDownModal";
+import { detectAnomalies } from "@/lib/anomaly-detection";
+import { useSidebar } from "@/contexts/sidebar";
 import type { QueryResponse } from "@/types/query";
 import type { SchemaResponse } from "@/types/schema";
 import type { ConnectionListResponse } from "@/types/connections";
@@ -295,9 +298,10 @@ function WidgetViz({ widget, onDataClick }: { widget: CanvasWidget; onDataClick?
 
 // ─── Widget Card ────────────────────────────────────────────────────────────
 
-function WidgetCard({ widget, selected, preview, onSelect, onRemove, onRun, onDragStart, onDragOver, onDragEnd, isDragging, onDataClick, globalFilter }: {
+function WidgetCard({ widget, selected, preview, onSelect, onRemove, onRun, onDuplicate, onDrillDown, onDragStart, onDragOver, onDragEnd, isDragging, onDataClick, globalFilter }: {
   widget: CanvasWidget; selected: boolean; preview: boolean;
   onSelect: () => void; onRemove: () => void; onRun: () => void;
+  onDuplicate: () => void; onDrillDown: (label: string, column: string) => void;
   onDragStart?: () => void; onDragOver?: (e: React.DragEvent) => void; onDragEnd?: () => void; isDragging?: boolean;
   onDataClick?: (label: string, column: string) => void;
   globalFilter?: { column: string; value: string } | null;
@@ -337,10 +341,13 @@ function WidgetCard({ widget, selected, preview, onSelect, onRemove, onRun, onDr
         </div>
         {!preview && (
           <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-            <button onClick={(e) => { e.stopPropagation(); onRun(); }} className="p-1 rounded text-slate-500 hover:text-blue-400 transition-colors">
+            <button onClick={(e) => { e.stopPropagation(); onRun(); }} className="p-1 rounded text-slate-500 hover:text-blue-400 transition-colors" title="Run query">
               <RefreshCw className={cn("h-3 w-3 transition-transform duration-500", widget.loading && "animate-spin")} />
             </button>
-            <button onClick={(e) => { e.stopPropagation(); onRemove(); }} className="p-1 rounded text-slate-500 hover:text-red-400 transition-colors">
+            <button onClick={(e) => { e.stopPropagation(); onDuplicate(); }} className="p-1 rounded text-slate-500 hover:text-emerald-400 transition-colors" title="Duplicate">
+              <Copy className="h-3 w-3" />
+            </button>
+            <button onClick={(e) => { e.stopPropagation(); onRemove(); }} className="p-1 rounded text-slate-500 hover:text-red-400 transition-colors" title="Remove">
               <Trash2 className="h-3 w-3" />
             </button>
           </div>
@@ -349,9 +356,7 @@ function WidgetCard({ widget, selected, preview, onSelect, onRemove, onRun, onDr
       {/* Body */}
       <div style={{ height: SIZES[widget.size].h }} className="overflow-hidden">
         {widget.loading && (
-          <div className="flex items-center justify-center h-full">
-            <div className="text-center"><Loader2 className="h-6 w-6 text-blue-400 animate-spin mx-auto mb-2" /><p className="text-[10px] text-slate-500">Running query…</p></div>
-          </div>
+          <SkeletonChart type={chartTypeToSkeleton(widget.chartType)} height={SIZES[widget.size].h} />
         )}
         {widget.error && !widget.loading && (
           <div className="flex items-center justify-center h-full p-4"><div className="text-center max-w-xs">
@@ -556,7 +561,8 @@ export default function StudioPage() {
   const [showAiModal, setShowAiModal] = useState(false);
   const [globalFilter, setGlobalFilter] = useState<{ column: string; value: string } | null>(null);
   const [dragWidgetId, setDragWidgetId] = useState<string | null>(null);
-  const [autoRefresh, setAutoRefresh] = useState(0); // seconds, 0 = off
+  const [autoRefresh, setAutoRefresh] = useState(0);
+  const [drillDown, setDrillDown] = useState<{ label: string; column: string } | null>(null); // seconds, 0 = off
 
   // Auto-refresh timer
   useEffect(() => {
@@ -574,6 +580,39 @@ export default function StudioPage() {
     if (!sidebar.collapsed) sidebar.setCollapsed(true);
     return () => { sidebar.setCollapsed(prevCollapsed.current); };
   }, []); // eslint-disable-line
+
+  // Keyboard shortcuts for Studio
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Ctrl+S — Save dashboard
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        e.preventDefault();
+        handleSave();
+        return;
+      }
+      // Delete — Remove selected widget
+      if (e.key === "Delete" && selWidgetId && !e.ctrlKey && !e.metaKey) {
+        const target = e.target as HTMLElement;
+        if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return;
+        e.preventDefault();
+        removeWidget(selWidgetId);
+        return;
+      }
+      // Ctrl+D — Duplicate selected widget
+      if ((e.ctrlKey || e.metaKey) && e.key === "d" && selWidgetId) {
+        e.preventDefault();
+        duplicateWidget(selWidgetId);
+        return;
+      }
+      // Escape — Deselect widget or exit preview
+      if (e.key === "Escape") {
+        if (preview) { setPreview(false); return; }
+        if (selWidgetId) { setSelWidgetId(null); return; }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selWidgetId, preview, handleSave, removeWidget, duplicateWidget]);
 
   // ── Data Fetching ──
   const { data: connData } = useQuery({ queryKey: ["connections"], queryFn: () => api.get<ConnectionListResponse>("/connections/") });
@@ -609,7 +648,21 @@ export default function StudioPage() {
   useEffect(() => {
     if (loadedRef.current || !dashList?.dashboards?.length) return;
     loadedRef.current = true;
-    const d = dashList.dashboards[0];
+    // Check for snapshot in URL hash
+    const hash = window.location.hash;
+    let snapDashId: string | null = null;
+    let snapFilter: { column: string; value: string } | null = null;
+    if (hash.startsWith("#snap=")) {
+      try {
+        const state = JSON.parse(atob(hash.slice(6)));
+        if (state.d) snapDashId = state.d;
+        if (state.fc && state.fv) snapFilter = { column: state.fc, value: state.fv };
+      } catch {}
+    }
+    const target = snapDashId
+      ? dashList.dashboards.find((x: any) => x.dashboard_id === snapDashId) || dashList.dashboards[0]
+      : dashList.dashboards[0];
+    const d = target;
     const cfg = d.config || {};
     setDashboard({
       id: d.dashboard_id, title: d.name || "My Dashboard", description: d.description || "",
@@ -617,6 +670,7 @@ export default function StudioPage() {
       widgets: deserializeWidgets(cfg.widgets, cfg.connection_id || ""),
       updatedAt: d.updated_at,
     });
+    if (snapFilter) setGlobalFilter(snapFilter);
   }, [dashList]);
 
   // ── Save / Create ──
@@ -645,6 +699,16 @@ export default function StudioPage() {
   });
 
   const handleSave = useCallback(() => saveMut.mutate(dashboard), [dashboard, saveMut]);
+
+  const handleShareSnapshot = useCallback(() => {
+    const state: Record<string, string> = {};
+    if (dashboard.id) state.d = dashboard.id;
+    if (globalFilter) { state.fc = globalFilter.column; state.fv = globalFilter.value; }
+    const hash = btoa(JSON.stringify(state));
+    const url = `${window.location.origin}${window.location.pathname}#snap=${hash}`;
+    navigator.clipboard.writeText(url);
+    toast.success("Snapshot URL copied to clipboard");
+  }, [dashboard.id, globalFilter]);
 
   const handleCreate = useCallback(() => {
     const d: StudioDashboard = {
@@ -687,6 +751,28 @@ export default function StudioPage() {
     setDashboard((d) => ({ ...d, widgets: d.widgets.filter((w) => w.id !== id) }));
     if (selWidgetId === id) setSelWidgetId(null);
   }, [selWidgetId]);
+
+  const duplicateWidget = useCallback((id: string) => {
+    const src = dashboard.widgets.find((w) => w.id === id);
+    if (!src) return;
+    const clone: CanvasWidget = {
+      ...src,
+      id: crypto.randomUUID(),
+      title: `${src.title} (copy)`,
+      result: null,
+      loading: false,
+      error: null,
+      aiInsight: null,
+    };
+    setDashboard((d) => {
+      const idx = d.widgets.findIndex((w) => w.id === id);
+      const widgets = [...d.widgets];
+      widgets.splice(idx + 1, 0, clone);
+      return { ...d, widgets };
+    });
+    setSelWidgetId(clone.id);
+    toast.success("Widget duplicated");
+  }, [dashboard.widgets]);
 
   // Drag-to-reorder
   const handleDragStart = useCallback((id: string) => setDragWidgetId(id), []);
@@ -741,6 +827,17 @@ export default function StudioPage() {
         }
       }
       setDashboard((d) => ({ ...d, widgets: d.widgets.map((x) => x.id === wid ? { ...x, result, loading: false, error: null, generatedSql: sql, aiInsight: insight } : x) }));
+      // AI Anomaly Detection — check for statistical anomalies
+      const widgetTitle = w.title || "Visual";
+      const anomalies = detectAnomalies(result, widgetTitle);
+      if (anomalies.length > 0) {
+        const a = anomalies[0]; // Show most severe
+        if (a.severity === "critical") {
+          toast.error(a.message, { duration: 8000, action: { label: "Investigate", onClick: () => setDrillDown({ label: a.label, column: a.column }) } });
+        } else {
+          toast(a.message, { duration: 6000, action: { label: "Investigate", onClick: () => setDrillDown({ label: a.label, column: a.column }) } });
+        }
+      }
     } catch (err) {
       const msg = err instanceof ApiRequestError ? err.message : "Query failed";
       setDashboard((d) => ({ ...d, widgets: d.widgets.map((x) => x.id === wid ? { ...x, loading: false, error: msg } : x) }));
@@ -783,8 +880,10 @@ export default function StudioPage() {
   const selWidget = dashboard.widgets.find((w) => w.id === selWidgetId);
 
   return (
-    // ★ KEY FIX: use h-full (fills parent) not min-h-[calc...] (escapes parent)
-    <div className={cn("flex flex-col", preview ? "fixed inset-0 z-40 bg-slate-900" : "h-full -m-4 lg:-m-6")}>
+    <div className={cn(
+      "absolute inset-0 flex flex-col overflow-hidden bg-slate-900",
+      preview && "fixed inset-0 z-40 bg-slate-900"
+    )}>
       {/* ── Toolbar ── */}
       <div className="shrink-0 border-b border-slate-700/25 bg-slate-900/90 backdrop-blur-md px-3 py-2">
         <div className="flex items-center justify-between gap-2">
@@ -827,6 +926,7 @@ export default function StudioPage() {
               </>
             )}
             <Button variant="ghost" size="sm" icon={<Save className="h-3 w-3" />} onClick={handleSave} isLoading={saveMut.isPending} className="h-7 text-[10px]">Save</Button>
+            <Button variant="ghost" size="sm" icon={<Link2 className="h-3 w-3" />} onClick={handleShareSnapshot} className="h-7 text-[10px]" title="Copy shareable snapshot URL">Share</Button>
             <Button variant={preview ? "primary" : "ghost"} size="sm"
               icon={preview ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
               onClick={() => setPreview(!preview)} className="h-7 text-[10px]">{preview ? "Edit" : "Preview"}</Button>
@@ -877,11 +977,15 @@ export default function StudioPage() {
         <div className="flex-1 overflow-y-auto p-4">
           {/* Global Filter Bar */}
           {globalFilter && (
-            <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-lg bg-blue-500/8 border border-blue-500/15 animate-fade-in">
+            <div className="flex items-center gap-2 mb-3 px-3 py-2 rounded-lg bg-blue-500/8 border border-blue-500/15 animate-fade-in filter-active">
               <span className="text-[10px] text-blue-300 font-medium">Filtered:</span>
               <span className="text-[10px] text-slate-300">{globalFilter.column} = &ldquo;{globalFilter.value}&rdquo;</span>
-              <button onClick={() => setGlobalFilter(null)} className="ml-auto text-[9px] text-blue-400 hover:text-blue-300 border border-blue-500/20 rounded px-2 py-0.5 transition-colors">
-                Clear filter
+              <button onClick={() => setDrillDown({ label: globalFilter.value, column: globalFilter.column })}
+                className="text-[9px] text-violet-400 hover:text-violet-300 border border-violet-500/20 rounded px-2 py-0.5 transition-colors flex items-center gap-1">
+                <Sparkles className="h-2.5 w-2.5" /> Drill down
+              </button>
+              <button onClick={() => setGlobalFilter(null)} className="ml-auto text-[9px] text-slate-500 hover:text-slate-300 border border-slate-700/20 rounded px-2 py-0.5 transition-colors">
+                Clear
               </button>
             </div>
           )}
@@ -892,6 +996,8 @@ export default function StudioPage() {
                 <WidgetCard key={w.id} widget={w} selected={selWidgetId === w.id} preview={preview}
                   onSelect={() => { setSelWidgetId(w.id); setPropsOpen(true); }}
                   onRemove={() => removeWidget(w.id)} onRun={() => runWidget(w.id)}
+                  onDuplicate={() => duplicateWidget(w.id)}
+                  onDrillDown={(label, column) => setDrillDown({ label, column })}
                   onDragStart={() => handleDragStart(w.id)}
                   onDragOver={(e) => handleDragOver(e, w.id)}
                   onDragEnd={handleDragEnd}
@@ -941,6 +1047,16 @@ export default function StudioPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Drill-Down Modal */}
+      {drillDown && (
+        <DrillDownModal
+          label={drillDown.label}
+          column={drillDown.column}
+          connectionId={dashboard.connectionId}
+          onClose={() => setDrillDown(null)}
+        />
       )}
     </div>
   );

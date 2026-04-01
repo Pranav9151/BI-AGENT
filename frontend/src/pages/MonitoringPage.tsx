@@ -103,7 +103,7 @@ function AuditPanel() {
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["audit-logs", search, statusFilter],
     queryFn: () => {
-      let path = "/audit/?limit=50";
+      let path = "/audit/?limit=100";
       if (search) path += `&search=${encodeURIComponent(search)}`;
       if (statusFilter) path += `&status=${encodeURIComponent(statusFilter)}`;
       return api.get<AuditLogResponse>(path);
@@ -117,26 +117,59 @@ function AuditPanel() {
     "export.generated": "text-blue-400",
     "export.blocked_restricted": "text-red-400",
     "saved_query.created": "text-cyan-400",
+    "dashboard.created": "text-violet-400",
+    "dashboard.updated": "text-violet-400",
+    "user.created": "text-amber-400",
+    "totp_activated": "text-amber-400",
+  };
+
+  const handleExportCSV = () => {
+    if (!logs.length) return;
+    const headers = ["Time", "Status", "Action", "User", "IP", "Rows", "Duration"];
+    const rows = logs.map((l: any) => [
+      l.created_at ? new Date(l.created_at).toISOString() : "",
+      l.execution_status || "",
+      l.question || "",
+      l.user_id || "",
+      l.ip_address || "",
+      l.row_count ?? "",
+      l.duration_ms ? `${l.duration_ms}ms` : "",
+    ]);
+    const csv = [headers.join(","), ...rows.map((r: string[]) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `audit-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click(); URL.revokeObjectURL(url);
+    toast.success("Audit logs exported as CSV");
   };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-slate-300">Audit Logs</h2>
-        <Button variant="ghost" size="sm" icon={<RefreshCw className="h-3 w-3" />} onClick={() => refetch()} isLoading={isLoading}>Refresh</Button>
+        <div className="flex items-center gap-1.5">
+          {logs.length > 0 && (
+            <Button variant="ghost" size="sm" icon={<FileText className="h-3 w-3" />} onClick={handleExportCSV} className="text-[10px]">Export CSV</Button>
+          )}
+          <Button variant="ghost" size="sm" icon={<RefreshCw className="h-3 w-3" />} onClick={() => refetch()} isLoading={isLoading}>Refresh</Button>
+        </div>
       </div>
 
       <div className="flex gap-3">
         <div className="flex-1">
-          <Input placeholder="Search audit logs…" value={search} onChange={(e) => setSearch(e.target.value)} icon={<Search className="h-3.5 w-3.5" />} />
+          <Input placeholder="Search logs by action, user, IP…" value={search} onChange={(e) => setSearch(e.target.value)} icon={<Search className="h-3.5 w-3.5" />} />
         </div>
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
           className="h-10 rounded-lg border border-slate-600/80 bg-slate-800/60 text-slate-300 text-xs px-3 appearance-none focus:outline-none focus:ring-1 focus:ring-blue-500/40">
-          <option value="">All statuses</option>
-          <option value="query.executed">query.executed</option>
-          <option value="export.generated">export.generated</option>
-          <option value="saved_query.created">saved_query.created</option>
-          <option value="notification_platform.tested">notification.tested</option>
+          <option value="">All activities</option>
+          <option value="query.executed">Queries</option>
+          <option value="export.generated">Exports</option>
+          <option value="saved_query.created">Saved Queries</option>
+          <option value="dashboard.created">Dashboard Created</option>
+          <option value="dashboard.updated">Dashboard Updated</option>
+          <option value="user.created">User Created</option>
+          <option value="notification_platform.tested">Notifications</option>
         </select>
       </div>
 
@@ -169,8 +202,9 @@ function AuditPanel() {
               <thead className="sticky top-0 z-10 bg-slate-800/95 backdrop-blur-sm border-b border-slate-700/40">
                 <tr>
                   <th className="text-left px-3 py-2.5 text-[10px] font-semibold text-slate-400 uppercase">Time</th>
-                  <th className="text-left px-3 py-2.5 text-[10px] font-semibold text-slate-400 uppercase">Status</th>
-                  <th className="text-left px-3 py-2.5 text-[10px] font-semibold text-slate-400 uppercase">Action</th>
+                  <th className="text-left px-3 py-2.5 text-[10px] font-semibold text-slate-400 uppercase">User</th>
+                  <th className="text-left px-3 py-2.5 text-[10px] font-semibold text-slate-400 uppercase">Activity</th>
+                  <th className="text-left px-3 py-2.5 text-[10px] font-semibold text-slate-400 uppercase">Detail</th>
                   <th className="text-left px-3 py-2.5 text-[10px] font-semibold text-slate-400 uppercase">IP</th>
                   <th className="text-right px-3 py-2.5 text-[10px] font-semibold text-slate-400 uppercase">Rows</th>
                 </tr>
@@ -178,12 +212,13 @@ function AuditPanel() {
               <tbody className="divide-y divide-slate-700/20">
                 {logs.map((log) => (
                   <tr key={log.id} className="hover:bg-blue-500/5 transition-colors">
-                    <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{new Date(log.created_at).toLocaleString()}</td>
+                    <td className="px-3 py-2 text-slate-500 whitespace-nowrap text-[10px]">{new Date(log.created_at).toLocaleString()}</td>
+                    <td className="px-3 py-2 text-slate-400 text-[10px] max-w-[100px] truncate">{log.user_id ? log.user_id.slice(0, 8) + "…" : "system"}</td>
                     <td className="px-3 py-2">
-                      <span className={cn("font-mono", statusColors[log.execution_status] || "text-slate-400")}>{log.execution_status}</span>
+                      <span className={cn("font-mono text-[10px]", statusColors[log.execution_status] || "text-slate-400")}>{log.execution_status}</span>
                     </td>
                     <td className="px-3 py-2 text-slate-300 max-w-[300px] truncate">{log.question}</td>
-                    <td className="px-3 py-2 text-slate-500 font-mono">{log.ip_address || "—"}</td>
+                    <td className="px-3 py-2 text-slate-500 font-mono text-[10px]">{log.ip_address || "—"}</td>
                     <td className="px-3 py-2 text-right text-slate-400">{log.row_count ?? "—"}</td>
                   </tr>
                 ))}

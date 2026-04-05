@@ -28,6 +28,10 @@ from app.api.v1.routes_integrations import router as integrations_router
 from app.api.v1.routes_audit import router as audit_router
 from app.api.v1.routes_settings import router as settings_router
 from app.api.v1.routes_dashboards import router as dashboards_router
+from app.api.v1.routes_structured_query import router as structured_query_router
+from app.api.v1.routes_schema_enhanced import router as schema_enhanced_router
+from app.api.v1.routes_alerts import router as alerts_router
+from app.api.v1.routes_embed import router as embed_router
 
 router.include_router(auth_router,          prefix="/auth",           tags=["auth"])
 router.include_router(users_router,         prefix="/users",          tags=["users"])
@@ -45,3 +49,7 @@ router.include_router(integrations_router,  prefix="/integrations",   tags=["int
 router.include_router(audit_router,         prefix="/audit",          tags=["audit"])
 router.include_router(settings_router,      prefix="/settings",       tags=["settings"])
 router.include_router(dashboards_router,    prefix="/dashboards",     tags=["dashboards"])
+router.include_router(structured_query_router, prefix="/query",         tags=["query"])
+router.include_router(schema_enhanced_router,  prefix="/schema",        tags=["schema"])
+router.include_router(alerts_router,           prefix="/alerts",         tags=["alerts"])
+router.include_router(embed_router,            prefix="/embed",          tags=["embed"])

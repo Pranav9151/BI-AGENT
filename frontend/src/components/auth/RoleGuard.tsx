@@ -1,10 +1,17 @@
 import React from "react";
 import { useAuthStore } from "@/stores/auth-store";
 
-type Role = "viewer" | "analyst" | "admin";
+/**
+ * Roles hierarchy (highest → lowest):
+ *   ceo > admin > analyst > viewer
+ *
+ * CEO has full system-wide access. Admin controls operations.
+ * Analyst can query and build. Viewer is read-only.
+ */
+export type Role = "viewer" | "analyst" | "admin" | "ceo";
 
 interface RoleGuardProps {
-  /** Minimum role required (inclusive: admin > analyst > viewer) */
+  /** Minimum role required (inclusive). ceo > admin > analyst > viewer */
   minRole?: Role;
   /** Specific roles allowed */
   allowedRoles?: Role[];
@@ -13,10 +20,11 @@ interface RoleGuardProps {
   children: React.ReactNode;
 }
 
-const ROLE_LEVEL: Record<Role, number> = {
+export const ROLE_LEVEL: Record<Role, number> = {
   viewer: 0,
   analyst: 1,
   admin: 2,
+  ceo: 3,
 };
 
 /**
@@ -27,9 +35,11 @@ const ROLE_LEVEL: Record<Role, number> = {
  *     <AdminPanel />
  *   </RoleGuard>
  *
- *   <RoleGuard allowedRoles={["analyst", "admin"]}>
+ *   <RoleGuard allowedRoles={["analyst", "admin", "ceo"]}>
  *     <QueryEditor />
  *   </RoleGuard>
+ *
+ * NOTE: minRole="admin" also allows CEO users automatically (ceo level > admin level).
  */
 export function RoleGuard({
   minRole,
@@ -37,7 +47,7 @@ export function RoleGuard({
   fallback = null,
   children,
 }: RoleGuardProps) {
-  const role = useAuthStore((s) => s.user?.role);
+  const role = useAuthStore((s) => s.user?.role) as Role | undefined;
 
   if (!role) return <>{fallback}</>;
 
@@ -45,8 +55,12 @@ export function RoleGuard({
     return <>{fallback}</>;
   }
 
-  if (minRole && ROLE_LEVEL[role] < ROLE_LEVEL[minRole]) {
-    return <>{fallback}</>;
+  if (minRole) {
+    const userLevel = ROLE_LEVEL[role] ?? 0;
+    const requiredLevel = ROLE_LEVEL[minRole] ?? 0;
+    if (userLevel < requiredLevel) {
+      return <>{fallback}</>;
+    }
   }
 
   return <>{children}</>;

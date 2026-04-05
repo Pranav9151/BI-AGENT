@@ -27,12 +27,13 @@ const LLMProviderFormPage = lazy(() => import("@/pages/LLMProviderFormPage"));
 const QueryPage           = lazy(() => import("@/pages/QueryPage"));
 const SavedQueriesPage    = lazy(() => import("@/pages/SavedQueriesPage"));
 const SchemaPage          = lazy(() => import("@/pages/SchemaPage"));
-const StudioPage          = lazy(() => import("@/pages/StudioPage"));
+const StudioPage = lazy(() => import("@/pages/StudioPage")); 
 const NotificationsPage   = lazy(() => import("@/pages/NotificationsPage"));
 const SchedulesPage       = lazy(() => import("@/pages/SchedulesPage"));
 const PermissionsPage     = lazy(() => import("@/pages/PermissionsPage"));
 const MonitoringPage      = lazy(() => import("@/pages/MonitoringPage"));
 const AdminPage           = lazy(() => import("@/pages/AdminPage"));
+const AlertsPage          = lazy(() => import("@/pages/AlertsPage"));
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 // Without this, ANY render crash produces a completely blank page with zero
@@ -194,6 +195,7 @@ export default function App() {
                   <Route path="schedules"      element={<Suspense fallback={<LoadingScreen />}><SchedulesPage /></Suspense>} />
                   <Route path="admin/permissions" element={<Suspense fallback={<LoadingScreen />}><PermissionsPage /></Suspense>} />
                   <Route path="monitoring" element={<Suspense fallback={<LoadingScreen />}><MonitoringPage /></Suspense>} />
+                  <Route path="alerts"     element={<Suspense fallback={<LoadingScreen />}><AlertsPage /></Suspense>} />
                   <Route path="admin"      element={<Suspense fallback={<LoadingScreen />}><AdminPage /></Suspense>} />
                 </Route>
               </Route>

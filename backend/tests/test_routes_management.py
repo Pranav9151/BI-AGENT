@@ -494,7 +494,7 @@ class TestUserCreateEndpoint:
         resp = _u_make_admin_client(db=_u_make_db(user=None)).post("/api/v1/users/", json=self._BODY)
         assert resp.status_code == 201
         body = resp.json()
-        assert body["email"] == "newuser@example.com" and body["is_approved"] is False and body["totp_enabled"] is False
+        assert body["email"] == "newuser@example.com" and body["is_approved"] is True and body["totp_enabled"] is False
 
     def test_create_user_email_lowercased(self):
         resp = _u_make_admin_client(db=_u_make_db(user=None)).post("/api/v1/users/", json={**self._BODY, "email": "NewUser@EXAMPLE.COM"})
@@ -5107,10 +5107,22 @@ class TestNotificationPlatformTest:
         assert resp.status_code == 200
 
     def test_test_success_true_when_decrypt_works(self):
+        from app.notifications.base import NotificationResult
         km = _np_make_key_manager(decrypt_return="xoxb-REALTOKEN")
-        resp = _np_make_admin_client(
-            db=_np_make_db(row=_np_make_platform(is_active=True)), km=km
-        ).post(f"/api/v1/notifications/{_np_PLATFORM_ID}/test")
+        with patch(
+            "app.api.v1.routes_notifications.test_provider",
+            new=AsyncMock(
+                return_value=NotificationResult(
+                    success=True,
+                    provider_type="slack",
+                    destination="",
+                    message="Connected",
+                )
+            ),
+        ):
+            resp = _np_make_admin_client(
+                db=_np_make_db(row=_np_make_platform(is_active=True)), km=km
+            ).post(f"/api/v1/notifications/{_np_PLATFORM_ID}/test")
         assert resp.json()["success"] is True
 
     def test_test_inactive_platform_returns_200_with_success_false(self):

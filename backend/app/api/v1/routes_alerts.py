@@ -27,19 +27,23 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import (
     CurrentUser,
     get_current_user,
     get_db,
+    get_key_manager,
+    get_redis_coordination,
     require_analyst_or_above,
 )
 from app.errors.exceptions import ResourceNotFoundError, ValidationError
 from app.logging.structured import get_logger
+from app.models.connection import Connection
+from app.services.sql_validator import validate_sql
 
 log = get_logger(__name__)
 router = APIRouter()
@@ -98,7 +102,7 @@ class AlertFiring(BaseModel):
     operator: str
     status: str  # fired, resolved, acknowledged
     notification_sent: bool
-    channels_notified: list[str] = []
+    channels_notified: list[str] = Field(default_factory=list)
 
 
 class AlertResponse(BaseModel):
@@ -149,8 +153,9 @@ class AlertTestResult(BaseModel):
 # =============================================================================
 # Using in-memory for rapid iteration. Production will use SQLAlchemy models.
 
-_alerts: dict[str, dict] = {}
-_firings: list[dict] = []
+_ALERT_KEY_PREFIX = "alerts:rule:"
+_ALERT_INDEX_PREFIX = "alerts:user_index:"
+_ALERT_FIRINGS_PREFIX = "alerts:firings:"
 
 VALID_OPERATORS = {"gt", "gte", "lt", "lte", "eq", "neq"}
 VALID_SEVERITIES = {"info", "warning", "critical"}
@@ -188,6 +193,102 @@ def _to_response(alert: dict) -> AlertResponse:
     )
 
 
+async def _save_alert(redis, alert: dict) -> None:
+    alert_id = alert["id"]
+    user_id = alert["user_id"]
+    await redis.set(f"{_ALERT_KEY_PREFIX}{alert_id}", json.dumps(alert), ex=60 * 60 * 24 * 30)
+    await redis.sadd(f"{_ALERT_INDEX_PREFIX}{user_id}", alert_id)
+    await redis.expire(f"{_ALERT_INDEX_PREFIX}{user_id}", 60 * 60 * 24 * 30)
+
+
+async def _get_alert(redis, alert_id: str) -> dict | None:
+    raw = await redis.get(f"{_ALERT_KEY_PREFIX}{alert_id}")
+    if not raw:
+        return None
+    return json.loads(raw)
+
+
+async def _delete_alert(redis, alert_id: str, user_id: str) -> None:
+    await redis.delete(f"{_ALERT_KEY_PREFIX}{alert_id}")
+    await redis.srem(f"{_ALERT_INDEX_PREFIX}{user_id}", alert_id)
+
+
+async def _list_user_alerts(redis, user_id: str) -> list[dict]:
+    ids = await redis.smembers(f"{_ALERT_INDEX_PREFIX}{user_id}")
+    alerts: list[dict] = []
+    for aid in ids:
+        raw = await redis.get(f"{_ALERT_KEY_PREFIX}{aid}")
+        if not raw:
+            continue
+        try:
+            alerts.append(json.loads(raw))
+        except Exception:
+            continue
+    alerts.sort(key=lambda a: a.get("created_at", ""), reverse=True)
+    return alerts
+
+
+async def _push_firing(redis, user_id: str, firing: dict) -> None:
+    key = f"{_ALERT_FIRINGS_PREFIX}{user_id}"
+    await redis.lpush(key, json.dumps(firing))
+    await redis.ltrim(key, 0, 499)
+    await redis.expire(key, 60 * 60 * 24 * 30)
+
+
+async def _list_firings(redis, user_id: str, limit: int) -> list[dict]:
+    key = f"{_ALERT_FIRINGS_PREFIX}{user_id}"
+    rows = await redis.lrange(key, 0, max(limit - 1, 0))
+    firings: list[dict] = []
+    for row in rows:
+        try:
+            firings.append(json.loads(row))
+        except Exception:
+            continue
+    return firings
+
+
+async def _validate_metric_sql(
+    connection_id: str,
+    metric_sql: str,
+    user_id: str,
+    role: str,
+    department: str,
+    db: AsyncSession,
+    redis,
+    key_manager,
+) -> None:
+    """
+    Enforce SQL safety for stored alert metric SQL.
+    """
+    try:
+        conn_uuid = uuid.UUID(connection_id)
+    except ValueError:
+        raise ValidationError(message="Invalid connection ID.", detail="condition.connection_id must be UUID")
+
+    conn = (
+        await db.execute(select(Connection).where(Connection.id == conn_uuid, Connection.is_active == True))
+    ).scalar_one_or_none()
+    if conn is None:
+        raise ResourceNotFoundError(
+            message="Connection not found.",
+            detail=f"Connection {connection_id} does not exist or is inactive.",
+        )
+
+    from app.api.v1.routes_query import _load_schema_for_query
+
+    # Alerts are user-owned, so validation must use the creator's permission-filtered schema.
+    schema_data = await _load_schema_for_query(
+        conn_uuid, user_id, role, department, db, redis, key_manager
+    )
+    allowed_tables = set(schema_data.keys()) if schema_data else set()
+    validate_sql(
+        raw_sql=metric_sql,
+        allowed_tables=allowed_tables,
+        max_rows=conn.max_rows,
+        dialect=conn.db_type or "postgres",
+    )
+
+
 # =============================================================================
 # Routes
 # =============================================================================
@@ -199,12 +300,10 @@ def _to_response(alert: dict) -> AlertResponse:
 )
 async def list_alerts(
     current_user: CurrentUser = Depends(get_current_user),
+    redis=Depends(get_redis_coordination),
 ) -> AlertListResponse:
     user_id = current_user["user_id"]
-    user_alerts = [
-        _to_response(a) for a in _alerts.values()
-        if a.get("user_id") == user_id
-    ]
+    user_alerts = [_to_response(a) for a in await _list_user_alerts(redis, user_id)]
     return AlertListResponse(alerts=user_alerts, total=len(user_alerts))
 
 
@@ -217,6 +316,9 @@ async def list_alerts(
 async def create_alert(
     body: AlertCreateRequest,
     current_user: CurrentUser = Depends(require_analyst_or_above),
+    db: AsyncSession = Depends(get_db),
+    key_manager=Depends(get_key_manager),
+    redis=Depends(get_redis_coordination),
 ) -> AlertResponse:
     if body.condition.operator not in VALID_OPERATORS:
         raise ValidationError(
@@ -228,6 +330,16 @@ async def create_alert(
             message=f"Invalid severity: {body.severity}",
             detail=f"Must be one of: {', '.join(VALID_SEVERITIES)}",
         )
+    await _validate_metric_sql(
+        connection_id=body.condition.connection_id,
+        metric_sql=body.condition.metric_sql,
+        user_id=current_user["user_id"],
+        role=current_user.get("role", "viewer"),
+        department=current_user.get("department", ""),
+        db=db,
+        redis=redis,
+        key_manager=key_manager,
+    )
 
     now = datetime.now(timezone.utc).isoformat()
     alert_id = str(uuid.uuid4())
@@ -247,7 +359,7 @@ async def create_alert(
         "created_at": now,
         "updated_at": now,
     }
-    _alerts[alert_id] = alert
+    await _save_alert(redis, alert)
 
     log.info("alert.created", alert_id=alert_id, name=body.name, user_id=current_user["user_id"])
     return _to_response(alert)
@@ -261,13 +373,10 @@ async def create_alert(
 async def alert_history(
     limit: int = 50,
     current_user: CurrentUser = Depends(get_current_user),
+    redis=Depends(get_redis_coordination),
 ) -> AlertHistoryResponse:
     user_id = current_user["user_id"]
-    user_alert_ids = {a["id"] for a in _alerts.values() if a.get("user_id") == user_id}
-    user_firings = [
-        AlertFiring(**f) for f in reversed(_firings)
-        if f.get("alert_id") in user_alert_ids
-    ][:limit]
+    user_firings = [AlertFiring(**f) for f in await _list_firings(redis, user_id, limit)]
     return AlertHistoryResponse(firings=user_firings, total=len(user_firings))
 
 
@@ -279,8 +388,9 @@ async def alert_history(
 async def get_alert(
     alert_id: str,
     current_user: CurrentUser = Depends(get_current_user),
+    redis=Depends(get_redis_coordination),
 ) -> AlertResponse:
-    alert = _alerts.get(alert_id)
+    alert = await _get_alert(redis, alert_id)
     if not alert or alert.get("user_id") != current_user["user_id"]:
         raise ResourceNotFoundError(message="Alert not found.", detail=f"Alert {alert_id} does not exist.")
     return _to_response(alert)
@@ -295,20 +405,58 @@ async def update_alert(
     alert_id: str,
     body: AlertUpdateRequest,
     current_user: CurrentUser = Depends(require_analyst_or_above),
+    db: AsyncSession = Depends(get_db),
+    key_manager=Depends(get_key_manager),
+    redis=Depends(get_redis_coordination),
 ) -> AlertResponse:
-    alert = _alerts.get(alert_id)
+    alert = await _get_alert(redis, alert_id)
     if not alert or alert.get("user_id") != current_user["user_id"]:
         raise ResourceNotFoundError(message="Alert not found.", detail=f"Alert {alert_id} does not exist.")
 
     if body.name is not None: alert["name"] = body.name
     if body.description is not None: alert["description"] = body.description
-    if body.condition is not None: alert["condition"] = body.condition.model_dump()
+    if body.condition is not None:
+        if body.condition.operator not in VALID_OPERATORS:
+            raise ValidationError(
+                message=f"Invalid operator: {body.condition.operator}",
+                detail=f"Must be one of: {', '.join(VALID_OPERATORS)}",
+            )
+        await _validate_metric_sql(
+            connection_id=body.condition.connection_id,
+            metric_sql=body.condition.metric_sql,
+            user_id=current_user["user_id"],
+            role=current_user.get("role", "viewer"),
+            department=current_user.get("department", ""),
+            db=db,
+            redis=redis,
+            key_manager=key_manager,
+        )
+        alert["condition"] = body.condition.model_dump()
     if body.channels is not None: alert["channels"] = [c.model_dump() for c in body.channels]
-    if body.check_interval_minutes is not None: alert["check_interval_minutes"] = body.check_interval_minutes
-    if body.cooldown_minutes is not None: alert["cooldown_minutes"] = body.cooldown_minutes
+    if body.check_interval_minutes is not None:
+        if body.check_interval_minutes < 5 or body.check_interval_minutes > 1440:
+            raise ValidationError(
+                message=f"Invalid check_interval_minutes: {body.check_interval_minutes}",
+                detail="Must be between 5 and 1440.",
+            )
+        alert["check_interval_minutes"] = body.check_interval_minutes
+    if body.cooldown_minutes is not None:
+        if body.cooldown_minutes < 5 or body.cooldown_minutes > 1440:
+            raise ValidationError(
+                message=f"Invalid cooldown_minutes: {body.cooldown_minutes}",
+                detail="Must be between 5 and 1440.",
+            )
+        alert["cooldown_minutes"] = body.cooldown_minutes
     if body.enabled is not None: alert["enabled"] = body.enabled
-    if body.severity is not None: alert["severity"] = body.severity
+    if body.severity is not None:
+        if body.severity not in VALID_SEVERITIES:
+            raise ValidationError(
+                message=f"Invalid severity: {body.severity}",
+                detail=f"Must be one of: {', '.join(VALID_SEVERITIES)}",
+            )
+        alert["severity"] = body.severity
     alert["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await _save_alert(redis, alert)
 
     log.info("alert.updated", alert_id=alert_id, user_id=current_user["user_id"])
     return _to_response(alert)
@@ -322,11 +470,12 @@ async def update_alert(
 async def delete_alert(
     alert_id: str,
     current_user: CurrentUser = Depends(require_analyst_or_above),
+    redis=Depends(get_redis_coordination),
 ):
-    alert = _alerts.get(alert_id)
+    alert = await _get_alert(redis, alert_id)
     if not alert or alert.get("user_id") != current_user["user_id"]:
         raise ResourceNotFoundError(message="Alert not found.", detail=f"Alert {alert_id} does not exist.")
-    del _alerts[alert_id]
+    await _delete_alert(redis, alert_id, current_user["user_id"])
     log.info("alert.deleted", alert_id=alert_id, user_id=current_user["user_id"])
 
 
@@ -339,12 +488,13 @@ async def test_alert(
     alert_id: str,
     current_user: CurrentUser = Depends(require_analyst_or_above),
     db: AsyncSession = Depends(get_db),
+    redis=Depends(get_redis_coordination),
 ) -> AlertTestResult:
     """
     Evaluates the alert's SQL against its connection and checks
     if the threshold condition would fire. Does NOT send notifications.
     """
-    alert = _alerts.get(alert_id)
+    alert = await _get_alert(redis, alert_id)
     if not alert or alert.get("user_id") != current_user["user_id"]:
         raise ResourceNotFoundError(message="Alert not found.", detail=f"Alert {alert_id} does not exist.")
 

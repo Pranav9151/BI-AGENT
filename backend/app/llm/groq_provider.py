@@ -16,7 +16,15 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from groq import AsyncGroq, APIError, APIConnectionError, RateLimitError
+try:
+    from groq import AsyncGroq, APIError, APIConnectionError, RateLimitError
+    _GROQ_AVAILABLE = True
+except Exception:  # pragma: no cover - exercised in environments without groq installed
+    AsyncGroq = None  # type: ignore[assignment]
+    APIError = Exception  # type: ignore[assignment]
+    APIConnectionError = Exception  # type: ignore[assignment]
+    RateLimitError = Exception  # type: ignore[assignment]
+    _GROQ_AVAILABLE = False
 
 from app.errors.exceptions import LLMProviderError
 from app.llm.base import BaseLLMProvider, LLMRequest, LLMResponse
@@ -42,6 +50,11 @@ class GroqProvider(BaseLLMProvider):
         The client is created per-call with the decrypted API key.
         This ensures the key is never held longer than necessary.
         """
+        if not _GROQ_AVAILABLE:
+            raise LLMProviderError(
+                message="Groq provider is not available in this environment.",
+                detail="Install the optional 'groq' dependency to enable this provider.",
+            )
         client = AsyncGroq(api_key=api_key)
         start = time.monotonic()
 
@@ -112,6 +125,8 @@ class GroqProvider(BaseLLMProvider):
         base_url: Optional[str] = None,
     ) -> tuple[bool, Optional[int], Optional[str]]:
         """Lightweight test: send a tiny prompt and measure round-trip."""
+        if not _GROQ_AVAILABLE:
+            return False, None, "Groq SDK is not installed."
         client = AsyncGroq(api_key=api_key)
         start = time.monotonic()
 

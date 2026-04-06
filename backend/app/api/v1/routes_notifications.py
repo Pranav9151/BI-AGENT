@@ -71,6 +71,7 @@ from app.errors.exceptions import (
 )
 from app.logging.structured import get_logger
 from app.models.notification_platform import NotificationPlatform, PlatformUserMapping
+from app.notifications.dispatcher import test_provider
 from app.schemas.notification import (
     PLATFORM_TYPES,
     WEBHOOK_PLATFORM_TYPES,
@@ -515,11 +516,7 @@ async def test_platform(
     audit=Depends(get_audit_writer),
 ) -> NotificationPlatformTestResponse:
     """
-    Connectivity probe.
-
-    In Phase 2 this simulates success (the notification provider adapters are
-    built in Phase 6).  The decrypt-zero pattern is implemented correctly so
-    that Phase 6 can slot in real probes without changing the security model.
+    Connectivity probe against the actual provider endpoint/credentials.
     """
     p = await _get_platform_or_404(platform_id, db)
 
@@ -533,7 +530,6 @@ async def test_platform(
         )
 
     # Decrypt in-memory only; zero reference immediately after use.
-    # Phase 2 behavior: simulate successful connectivity if decrypt succeeds.
     plaintext_config: Optional[str] = None
     success = False
     message = "Test failed."
@@ -542,9 +538,22 @@ async def test_platform(
         plaintext_config = key_manager.decrypt(
             p.encrypted_config, KeyPurpose.NOTIFICATION_KEYS
         )
-        if plaintext_config:
-            success = True
-            message = "Connectivity test passed."
+        try:
+            config_dict = json.loads(plaintext_config)
+            if not isinstance(config_dict, dict):
+                raise ValueError("delivery_config JSON must be an object")
+        except Exception:
+            # Backward compatibility: older rows may contain plaintext token/URL values.
+            # Wrap as provider-appropriate minimal config so test probes can still run.
+            if p.platform_type == "slack":
+                config_dict = {"bot_token": plaintext_config}
+            elif p.platform_type in ("teams", "webhook"):
+                config_dict = {"webhook_url": plaintext_config}
+            else:
+                config_dict = {"value": plaintext_config}
+        result = await test_provider(p.platform_type, config_dict)
+        success = result.success
+        message = result.message if result.success else (result.error or "Connectivity test failed.")
     except Exception as exc:
         log.warning(
             "notifications.test.failed",

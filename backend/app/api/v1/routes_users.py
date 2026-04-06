@@ -285,7 +285,8 @@ async def create_user(
         role=body.role.value,
         department=body.department,
         is_active=True,
-        is_approved=False,
+        # Admin-created users are pre-approved and can sign in immediately.
+        is_approved=True,
         totp_enabled=False,
     )
     # Set timestamps explicitly for test compatibility

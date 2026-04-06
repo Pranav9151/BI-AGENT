@@ -27,6 +27,7 @@ SECURITY:
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from typing import Any, Optional
@@ -215,18 +216,87 @@ async def _detect_relationships_postgres(
 
 VALID_AGGS = {"SUM", "COUNT", "AVG", "MIN", "MAX", "NONE"}
 VALID_OPS = {"=", "!=", ">", "<", ">=", "<=", "LIKE", "IN", "NOT IN", "IS NULL", "IS NOT NULL"}
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def _quote(identifier: str) -> str:
-    """Quote a SQL identifier to prevent injection."""
-    # Strip any existing quotes and re-quote
-    clean = identifier.replace('"', '').replace("'", "").replace(";", "")
-    return f'"{clean}"'
+def _validate_identifier(identifier: str, kind: str) -> str:
+    """
+    Strict SQL identifier validation.
+    Prevents identifier-based SQL injection in table/column references.
+    """
+    ident = (identifier or "").strip()
+    if not ident or not _IDENTIFIER_RE.fullmatch(ident):
+        raise ValidationError(
+            message=f"Invalid {kind}: {identifier!r}",
+            detail=f"{kind} must match pattern {_IDENTIFIER_RE.pattern}",
+        )
+    return ident
+
+
+def _quote(identifier: str, kind: str = "identifier") -> str:
+    """Quote a validated SQL identifier."""
+    return f'"{_validate_identifier(identifier, kind)}"'
+
+
+def _literal_sql(value: Any) -> str:
+    """Safely render a literal SQL value."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    # Fallback to string literal with single-quote escaping
+    escaped = str(value).replace("'", "''")
+    return f"'{escaped}'"
+
+
+def _validate_fields_against_schema(
+    req: StructuredQueryRequest,
+    schema_data: dict[str, Any],
+) -> None:
+    """
+    Ensure all table/column references are present in the permission-filtered schema.
+    """
+    table_columns: dict[str, set[str]] = {}
+    for table_name, table_info in schema_data.items():
+        table_columns[table_name] = set((table_info.get("columns") or {}).keys())
+
+    # Validate dimensions + measures
+    for field in req.dimensions + req.measures:
+        table = _validate_identifier(field.table, "table")
+        column = _validate_identifier(field.column, "column")
+        if table not in table_columns:
+            raise ValidationError(
+                message=f"Unknown or unauthorized table: {table}",
+                detail=f"Table {table!r} is not present in accessible schema.",
+            )
+        if column not in table_columns[table]:
+            raise ValidationError(
+                message=f"Unknown or unauthorized column: {table}.{column}",
+                detail=f"Column {column!r} is not present in table {table!r}.",
+            )
+
+    # Validate filters
+    for f in req.filters:
+        table = _validate_identifier(f.table, "table")
+        column = _validate_identifier(f.column, "column")
+        if table not in table_columns:
+            raise ValidationError(
+                message=f"Unknown or unauthorized filter table: {table}",
+                detail=f"Table {table!r} is not present in accessible schema.",
+            )
+        if column not in table_columns[table]:
+            raise ValidationError(
+                message=f"Unknown or unauthorized filter column: {table}.{column}",
+                detail=f"Column {column!r} is not present in table {table!r}.",
+            )
 
 
 def _build_structured_sql(
     req: StructuredQueryRequest,
     relationships: list[dict[str, str]],
+    schema_data: dict[str, Any],
 ) -> tuple[str, list[str], list[str]]:
     """
     Build SQL from structured field specs.
@@ -237,6 +307,9 @@ def _build_structured_sql(
     Raises:
         ValidationError if tables can't be joined.
     """
+    # Validate all field references against permission-filtered schema first
+    _validate_fields_against_schema(req, schema_data)
+
     # Collect all referenced tables
     all_fields = req.dimensions + req.measures
     table_set: set[str] = set()
@@ -258,17 +331,17 @@ def _build_structured_sql(
     group_by_parts: list[str] = []
     
     for d in req.dimensions:
-        ref = f'{_quote(d.table)}.{_quote(d.column)}'
-        select_parts.append(f'{ref} AS {_quote(d.column)}')
+        ref = f'{_quote(d.table, "table")}.{_quote(d.column, "column")}'
+        select_parts.append(f'{ref} AS {_quote(d.column, "column")}')
         group_by_parts.append(ref)
     
     for m in req.measures:
-        ref = f'{_quote(m.table)}.{_quote(m.column)}'
+        ref = f'{_quote(m.table, "table")}.{_quote(m.column, "column")}'
         agg = m.agg.upper() if m.agg.upper() in VALID_AGGS else "NONE"
         if agg == "NONE":
-            select_parts.append(f'{ref} AS {_quote(m.column)}')
+            select_parts.append(f'{ref} AS {_quote(m.column, "column")}')
         else:
-            select_parts.append(f'{agg}({ref}) AS {_quote(m.column)}')
+            select_parts.append(f'{agg}({ref}) AS {_quote(m.column, "column")}')
     
     if not select_parts:
         raise ValidationError(
@@ -280,7 +353,7 @@ def _build_structured_sql(
     joins_generated: list[str] = []
     
     if len(tables) == 1:
-        from_clause = _quote(tables[0])
+        from_clause = _quote(tables[0], "table")
     else:
         # Multi-table: need JOIN paths
         if not relationships:
@@ -299,16 +372,15 @@ def _build_structured_sql(
         op = f.operator.upper()
         if op not in VALID_OPS:
             continue
-        ref = f'{_quote(f.table)}.{_quote(f.column)}'
-        
+        ref = f'{_quote(f.table, "table")}.{_quote(f.column, "column")}'
+
         if op in ("IS NULL", "IS NOT NULL"):
             where_parts.append(f'{ref} {op}')
         elif op in ("IN", "NOT IN") and f.values:
-            vals = ", ".join(f"'{str(v)}'" for v in f.values)
+            vals = ", ".join(_literal_sql(v) for v in f.values[:1000])
             where_parts.append(f'{ref} {op} ({vals})')
         elif f.value is not None:
-            val = str(f.value).replace("'", "''")  # Escape single quotes
-            where_parts.append(f"{ref} {op} '{val}'")
+            where_parts.append(f"{ref} {op} {_literal_sql(f.value)}")
     
     # Assemble
     sql = f"SELECT {', '.join(select_parts)} FROM {from_clause}"
@@ -323,11 +395,19 @@ def _build_structured_sql(
         sql += f" GROUP BY {', '.join(group_by_parts)}"
     
     # ORDER BY
+    allowed_order_aliases = {_validate_identifier(d.column, "column") for d in req.dimensions}
+    allowed_order_aliases.update(_validate_identifier(m.column, "column") for m in req.measures)
     if req.order_by:
+        order_col = _validate_identifier(req.order_by, "order_by column")
+        if order_col not in allowed_order_aliases:
+            raise ValidationError(
+                message=f"Invalid order_by column: {order_col}",
+                detail="order_by must match one of the selected dimension/measure columns.",
+            )
         direction = "DESC" if req.order_dir.upper() == "DESC" else "ASC"
-        sql += f" ORDER BY {_quote(req.order_by)} {direction}"
+        sql += f" ORDER BY {_quote(order_col, 'column')} {direction}"
     elif req.dimensions:
-        sql += f" ORDER BY {_quote(req.dimensions[0].column)}"
+        sql += f" ORDER BY {_quote(req.dimensions[0].column, 'column')}"
     
     sql += f" LIMIT {req.limit}"
     
@@ -376,7 +456,7 @@ def _build_join_chain(
                 for rel in adj.get(joined_tbl, []):
                     if rel["to_table"] == tbl:
                         join_clauses.append(
-                            f'JOIN {_quote(tbl)} ON {_quote(joined_tbl)}.{_quote(rel["from_col"])} = {_quote(tbl)}.{_quote(rel["to_col"])}'
+                            f'JOIN {_quote(tbl, "table")} ON {_quote(joined_tbl, "table")}.{_quote(rel["from_col"], "column")} = {_quote(tbl, "table")}.{_quote(rel["to_col"], "column")}'
                         )
                         joined.add(tbl)
                         remaining.discard(tbl)
@@ -397,7 +477,7 @@ def _build_join_chain(
             detail="Use AI Query mode or select fields from related tables only.",
         )
     
-    return _quote(tables[0]), join_clauses
+    return _quote(tables[0], "table"), join_clauses
 
 
 # =============================================================================
@@ -456,13 +536,22 @@ async def structured_query(
     for f in body.filters:
         table_set.add(f.table)
     
+    # Load permission-filtered schema and allowed tables first.
+    from app.api.v1.routes_query import _load_schema_for_query
+    role = current_user.get("role", "viewer")
+    department = current_user.get("department", "")
+    schema_data = await _load_schema_for_query(
+        conn_uuid, user_id, role, department, db, redis, key_manager,
+    )
+    allowed_tables = set(schema_data.keys()) if schema_data else set()
+
     # Detect FK relationships (only if multi-table)
     relationships: list[dict[str, str]] = []
     if len(table_set) > 1:
         relationships = await _detect_relationships(connection, key_manager, table_set)
-    
+
     # Build SQL
-    sql, tables_used, joins_generated = _build_structured_sql(body, relationships)
+    sql, tables_used, joins_generated = _build_structured_sql(body, relationships, schema_data)
     
     log.info(
         "structured_query.sql_generated",
@@ -473,15 +562,6 @@ async def structured_query(
     )
     
     # Validate SQL (same pipeline as NL queries)
-    # Load allowed tables from schema
-    from app.api.v1.routes_query import _load_schema_for_query
-    role = current_user.get("role", "viewer")
-    department = current_user.get("department", "")
-    schema_data = await _load_schema_for_query(
-        conn_uuid, user_id, role, department, db, redis, key_manager,
-    )
-    allowed_tables = set(schema_data.keys()) if schema_data else set()
-    
     validation = validate_sql(
         raw_sql=sql,
         allowed_tables=allowed_tables,

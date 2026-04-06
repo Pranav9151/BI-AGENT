@@ -1,6 +1,8 @@
+var _a;
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath, URL } from "node:url";
+var devProxyTarget = (_a = process.env.VITE_DEV_PROXY_TARGET) !== null && _a !== void 0 ? _a : "http://localhost:8000";
 export default defineConfig({
     plugins: [react()],
     resolve: {
@@ -27,11 +29,11 @@ export default defineConfig({
         port: 3000,
         proxy: {
             "/api": {
-                target: "http://localhost:8000",
+                target: devProxyTarget,
                 changeOrigin: true,
             },
             "/health": {
-                target: "http://localhost:8000",
+                target: devProxyTarget,
                 changeOrigin: true,
             },
         },

@@ -48,7 +48,7 @@ interface PropertiesPanelProps {
 
 export function PropertiesPanel({ widget, onUpdate, onRun }: PropertiesPanelProps) {
   const [nl, setNl] = useState(widget.nlQuestion);
-  useEffect(() => { setNl(widget.nlQuestion); }, [widget.id]); // eslint-disable-line
+  useEffect(() => { setNl(widget.nlQuestion); }, [widget.id]);
 
   return (
     <div className="h-full flex flex-col overflow-hidden">

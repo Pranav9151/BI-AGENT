@@ -49,6 +49,7 @@ async def init_redis() -> None:
         "socket_connect_timeout": 5.0,
         "retry_on_timeout": True,
         "health_check_interval": 30,
+        "max_connections": settings.REDIS_MAX_CONNECTIONS,
     }
 
     # DB 0 — Cache (degradable)

@@ -10,7 +10,7 @@
  *   - Profile tab now shows anomaly flags (high-null, low-distinct)
  */
 
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Database, Table2, Columns3, Key, RefreshCw,
@@ -831,7 +831,12 @@ export default function SchemaPage() {
 
   const { data: connData } = useQuery({ queryKey: ["connections"], queryFn: () => api.get<ConnectionListResponse>("/connections/") });
   const connections = connData?.connections?.filter((c) => c.is_active) ?? [];
-  if (connections.length > 0 && !selectedConnection) setSelectedConnection(connections[0].connection_id);
+
+  useEffect(() => {
+    if (connections.length > 0 && !selectedConnection) {
+      setSelectedConnection(connections[0].connection_id);
+    }
+  }, [connections, selectedConnection]);
 
   const { data: schema, isLoading, error, refetch } = useQuery({
     queryKey: ["schema", selectedConnection],

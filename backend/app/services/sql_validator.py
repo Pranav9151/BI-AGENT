@@ -197,6 +197,21 @@ def validate_sql(
             detail="LLM returned empty SQL",
         )
 
+    # Pre-parse block for dialect-specific operations that can trigger parse
+    # errors before we can classify them as dangerous.
+    pre_pattern = _DANGEROUS_PATTERNS.get(dialect)
+    if pre_pattern and pre_pattern.search(sql):
+        match = pre_pattern.search(sql)
+        keyword = match.group(0) if match else "unknown"
+        log.warning(
+            "sql_validator.blocked_pattern",
+            pattern=keyword, dialect=dialect, sql=sql[:200],
+        )
+        raise SQLValidationError(
+            message="The query contains a blocked operation.",
+            detail=f"Blocked pattern: {keyword} (dialect={dialect})",
+        )
+
     # ─── Step 1: Parse with sqlglot ──────────────────────────────────────
     try:
         parsed = sqlglot.parse(sql, dialect=dialect)
@@ -255,10 +270,18 @@ def validate_sql(
             )
 
     # ─── Step 4: Verify referenced tables exist ─────────────────────────
+    cte_names: set[str] = set()
+    for cte in tree.find_all(exp.CTE):
+        alias = getattr(cte, "alias_or_name", None)
+        if alias:
+            cte_names.add(str(alias).lower())
+
     tables_referenced: list[str] = []
     for table in tree.find_all(exp.Table):
         table_name = table.name
         if table_name:
+            if table_name.lower() in cte_names:
+                continue
             tables_referenced.append(table_name)
 
     if allowed_tables:

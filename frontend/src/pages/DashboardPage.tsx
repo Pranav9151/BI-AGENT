@@ -364,14 +364,17 @@ export default function DashboardPage() {
         <div className="space-y-3">
           <h2 className="text-sm font-semibold text-slate-300">Platform Status</h2>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {[
+            {[ 
               { label: "API Server", status: "Healthy", icon: <Activity className="h-4 w-4" /> },
               { label: "PostgreSQL", status: "Connected", icon: <Database className="h-4 w-4" /> },
               { label: "Redis", status: "3 DBs Active", icon: <Database className="h-4 w-4" /> },
               { label: "LLM Provider", status: "Ready", icon: <Brain className="h-4 w-4" /> },
             ].map((svc, i) => (
-              <div key={svc.label} className={cn("flex items-center gap-2.5 p-3 rounded-xl border border-slate-700/20 bg-slate-800/15 transition-all duration-500",
-                useAnimateIn("fade-up", 600 + i * 60))}>
+              <div
+                key={svc.label}
+                className="flex items-center gap-2.5 p-3 rounded-xl border border-slate-700/20 bg-slate-800/15 transition-all duration-500"
+                style={{ transitionDelay: stagger(i + 10, 60) }}
+              >
                 <span className="p-1.5 rounded-lg text-emerald-400 bg-emerald-500/10">{svc.icon}</span>
                 <div><p className="text-[11px] font-medium text-slate-300">{svc.label}</p><p className="text-[10px] text-emerald-400">{svc.status}</p></div>
               </div>

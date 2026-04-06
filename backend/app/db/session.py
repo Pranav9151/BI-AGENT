@@ -29,10 +29,10 @@ def init_db_engine() -> None:
     _engine = create_async_engine(
         settings.DATABASE_URL,
         echo=settings.is_development,
-        pool_size=20,
-        max_overflow=10,
-        pool_timeout=30,
-        pool_recycle=1800,
+        pool_size=settings.DB_POOL_SIZE,
+        max_overflow=settings.DB_MAX_OVERFLOW,
+        pool_timeout=settings.DB_POOL_TIMEOUT_SECONDS,
+        pool_recycle=settings.DB_POOL_RECYCLE_SECONDS,
         pool_pre_ping=True,
     )
 

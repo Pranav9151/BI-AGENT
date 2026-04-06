@@ -61,12 +61,12 @@ log = get_logger(__name__)
 # Endpoint class → rate limit mapping
 # =============================================================================
 
-# (path_prefix, limit_per_minute, endpoint_class_name)
-_ENDPOINT_RULES: list[tuple[str, int, str]] = [
-    ("/api/v1/auth",    10,  "auth"),
-    ("/api/v1/query",   30,  "llm"),
-    ("/api/v1/export",   5,  "export"),
-    ("/api/v1/schema",  60,  "schema"),
+# (path_prefix, endpoint_class_name)
+_ENDPOINT_RULES: list[tuple[str, str]] = [
+    ("/api/v1/auth", "auth"),
+    ("/api/v1/query", "llm"),
+    ("/api/v1/export", "export"),
+    ("/api/v1/schema", "schema"),
 ]
 
 
@@ -75,9 +75,15 @@ def _classify_endpoint(path: str, settings) -> tuple[int, str]:
     Return (limit_per_minute, class_name) for a given path.
     Checks prefix matches in priority order.
     """
-    for prefix, limit, name in _ENDPOINT_RULES:
+    limits = {
+        "auth": settings.RATE_LIMIT_AUTH_PER_MINUTE,
+        "llm": settings.RATE_LIMIT_LLM_PER_MINUTE,
+        "export": settings.RATE_LIMIT_EXPORT_PER_MINUTE,
+        "schema": settings.RATE_LIMIT_SCHEMA_PER_MINUTE,
+    }
+    for prefix, name in _ENDPOINT_RULES:
         if path.startswith(prefix):
-            return limit, name
+            return limits[name], name
     return settings.RATE_LIMIT_DEFAULT_PER_MINUTE, "default"
 
 

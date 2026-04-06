@@ -79,6 +79,7 @@ def pytest_configure(config):
     os.environ.setdefault("FRONTEND_URL", "http://localhost:3000")
     os.environ.setdefault("CORS_ORIGINS", '["http://localhost:3000"]')
     os.environ.setdefault("REGISTRATION_OPEN", "true")  # Allow in testing
+    os.environ["ALLOW_PRIVATE_DB_CONNECTIONS"] = "false"
 
     # Clear the lru_cache on Settings so it picks up the new env vars
     from app.config import get_settings

@@ -37,6 +37,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.dependencies import (
     CurrentUser,
     get_audit_writer,
@@ -50,9 +51,11 @@ from app.errors.exceptions import (
     AccountLockedError,
     AdminRequiredError,
     AuthenticationError,
+    DuplicateResourceError,
     InvalidCredentialsError,
     MFAInvalidError,
     MFARequiredError,
+    RegistrationClosedError,
     ResourceNotFoundError,
 )
 from app.logging.structured import get_logger
@@ -541,13 +544,12 @@ async def refresh(
 # POST /logout
 # =============================================================================
 
-@router.post("/logout", status_code=200)
+@router.post("/logout", status_code=204, response_class=Response, response_model=None)
 async def logout(
     request: Request,
-    response: Response,
     current_user: CurrentUser = Depends(get_current_user),
     redis_security=Depends(get_redis_security),
-) -> None:
+) -> Response:
     """
     Revoke both tokens and clear the session.
 
@@ -587,8 +589,9 @@ async def logout(
         except Exception as exc:
             log.warning("auth.logout.admin_session_clear_failed", user_id=user_id, error=str(exc))
 
-    # Delete the refresh cookie (path must match set path for browser to honour it)
+    # Delete the refresh cookie on an explicit no-content response.
     cookie_settings = get_refresh_cookie_settings()
+    response = Response(status_code=204)
     response.delete_cookie(
         key=cookie_settings["key"],
         path=cookie_settings["path"],
@@ -598,6 +601,7 @@ async def logout(
     )
 
     log.info("auth.logout.success", user_id=user_id, ip=ip)
+    return response
 
 
 # =============================================================================
@@ -789,23 +793,25 @@ async def register(
     - New users are created with role=viewer, is_approved=False
     - Admin must approve before the user can login
     """
-    from app.config import get_settings
     settings = get_settings()
 
+    if not settings.REGISTRATION_OPEN:
+        raise RegistrationClosedError()
+
     # Domain validation
-    allowed_domains_str = getattr(settings, "allowed_email_domains", "") or ""
+    allowed_domains_str = settings.ALLOWED_EMAIL_DOMAINS or ""
     if allowed_domains_str:
         allowed = [d.strip().lower() for d in allowed_domains_str.split(",") if d.strip()]
         email_domain = body.email.lower().split("@")[-1]
         if allowed and email_domain not in allowed:
-            raise AuthenticationError(
+            raise RegistrationClosedError(
                 message=f"Registration is restricted to company email domains. Allowed: {', '.join(allowed)}",
             )
 
     # Check duplicate
     dup = await db.execute(select(User).where(User.email == body.email.lower()))
     if dup.scalar_one_or_none() is not None:
-        raise AuthenticationError(message="An account with this email already exists.")
+        raise DuplicateResourceError(message="An account with this email already exists.")
 
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)

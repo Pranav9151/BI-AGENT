@@ -60,7 +60,7 @@ class TestModelImports:
     @pytest.mark.security
     def test_total_table_count(self):
         tables = Base.metadata.tables
-        assert len(tables) == 16, f"Expected 16 tables, got {len(tables)}: {list(tables.keys())}"
+        assert len(tables) == 18, f"Expected 18 tables, got {len(tables)}: {list(tables.keys())}"
 
 
 class TestUserModel:
@@ -142,6 +142,10 @@ class TestRedisManager:
         assert settings.REDIS_DB_SECURITY == 1
         assert settings.REDIS_DB_COORDINATION == 2
 
+    def test_redis_pool_limit_is_positive(self):
+        settings = get_settings()
+        assert settings.REDIS_MAX_CONNECTIONS >= 1
+
 
 class TestConnectionModel:
     @pytest.mark.security
@@ -149,6 +153,16 @@ class TestConnectionModel:
         cols = {c.name for c in Connection.__table__.columns}
         assert "pool_min_size" in cols
         assert "pool_max_size" in cols
+
+
+class TestRuntimePoolSettings:
+    @pytest.mark.security
+    def test_db_pool_settings_are_non_negative(self):
+        settings = get_settings()
+        assert settings.DB_POOL_SIZE >= 0
+        assert settings.DB_MAX_OVERFLOW >= 0
+        assert settings.DB_POOL_TIMEOUT_SECONDS >= 0
+        assert settings.DB_POOL_RECYCLE_SECONDS >= 0
 
 
 # =============================================================================

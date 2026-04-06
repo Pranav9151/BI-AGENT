@@ -50,6 +50,17 @@ class Settings(BaseSettings):
     APP_WORKERS: int = 4
     LOG_LEVEL: str = "info"
 
+    @field_validator("APP_ENV", mode="before")
+    @classmethod
+    def normalize_app_env(cls, v: Any) -> Any:
+        """
+        Accept common shorthand for test environment.
+        Keeps local/dev tooling resilient when APP_ENV=test is used.
+        """
+        if isinstance(v, str) and v.strip().lower() == "test":
+            return AppEnvironment.TESTING.value
+        return v
+
     # CORS — NEVER ["*"] (v3.1 Layer 3)
     FRONTEND_URL: str = "https://localhost"
     CORS_ORIGINS: list[str] = Field(default=["https://localhost"])
@@ -80,6 +91,10 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str
     POSTGRES_DB: str = "smart_bi_agent"
     DATABASE_URL: str
+    DB_POOL_SIZE: int = 20
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT_SECONDS: int = 30
+    DB_POOL_RECYCLE_SECONDS: int = 1800
 
     @field_validator("DATABASE_URL")
     @classmethod
@@ -88,16 +103,36 @@ class Settings(BaseSettings):
             raise ValueError("DATABASE_URL must be a PostgreSQL connection string")
         return v
 
+    @field_validator(
+        "DB_POOL_SIZE",
+        "DB_MAX_OVERFLOW",
+        "DB_POOL_TIMEOUT_SECONDS",
+        "DB_POOL_RECYCLE_SECONDS",
+    )
+    @classmethod
+    def validate_db_pool_values(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("Database pool settings must be >= 0")
+        return v
+
     # =========================================================================
     # Redis (Segmented — 3 Databases per v3.1 Section 6)
     # =========================================================================
     REDIS_URL: str = "redis://redis:6379"
     REDIS_PASSWORD: str = ""
+    REDIS_MAX_CONNECTIONS: int = 200
 
     # Redis database numbers (hardcoded per architecture)
     REDIS_DB_CACHE: int = 0          # DB 0: Cache (allkeys-lru, degradable)
     REDIS_DB_SECURITY: int = 1       # DB 1: Security (noeviction, FAIL-CLOSED)
     REDIS_DB_COORDINATION: int = 2   # DB 2: Coordination (volatile-lru)
+
+    @field_validator("REDIS_MAX_CONNECTIONS")
+    @classmethod
+    def validate_redis_max_connections(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("REDIS_MAX_CONNECTIONS must be >= 1")
+        return v
 
     # =========================================================================
     # Registration — Domain Restriction

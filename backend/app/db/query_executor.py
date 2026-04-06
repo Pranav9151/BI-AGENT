@@ -106,8 +106,21 @@ async def execute_query_postgres(
         # Set statement_timeout as a safety net
         await conn.execute(f"SET statement_timeout = '{query_timeout * 1000}'")
 
-        # Execute the query
-        records = await conn.fetch(sql)
+        # Execute via cursor so we never materialize unbounded results in memory.
+        records: list[asyncpg.Record] = []
+        columns: list[str] = []
+        truncated = False
+        prefetch = max(1, min(max_rows, 1000))
+        async with conn.transaction():
+            cursor = conn.cursor(sql, prefetch=prefetch)
+            async for record in cursor:
+                if not columns:
+                    columns = list(record.keys())
+                if len(records) < max_rows:
+                    records.append(record)
+                    continue
+                truncated = True
+                break
 
         duration_ms = int((time.monotonic() - start) * 1000)
 
@@ -119,15 +132,9 @@ async def execute_query_postgres(
                 duration_ms=duration_ms,
             )
 
-        # Extract column names from the first record
-        columns = list(records[0].keys())
-
-        # Convert to list of dicts, respecting max_rows
-        truncated = len(records) > max_rows
+        # Convert to list of dicts.
         rows: list[dict[str, Any]] = []
-        for i, record in enumerate(records):
-            if i >= max_rows:
-                break
+        for record in records:
             row = {}
             for col in columns:
                 val = record[col]

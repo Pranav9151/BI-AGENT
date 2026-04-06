@@ -296,27 +296,31 @@ export function useWidgetOps({
           ),
         }));
 
-        // ★ Anomaly detection with xAxisType
-        const xAxisType = w.xAxis?.type;
-        const anomalies = detectAnomalies(result, w.title || "Visual", xAxisType);
-        if (anomalies.length > 0) {
-          const a = anomalies[0];
-          if (a.severity === "critical") {
-            toast.error(a.message, {
-              duration: 8000,
-              action: {
-                label: "Investigate",
-                onClick: () => setDrillDown({ label: a.label, column: a.column }),
-              },
-            });
-          } else {
-            toast(a.message, {
-              duration: 6000,
-              action: {
-                label: "Investigate",
-                onClick: () => setDrillDown({ label: a.label, column: a.column }),
-              },
-            });
+        // ★ Anomaly detection is limited to structured field-well visuals.
+        // NLQ-generated widgets (Overview/Breakdown/Trend) often compare
+        // sparse aggregate snapshots and can produce noisy % delta toasts.
+        if (w.mode === "fields") {
+          const xAxisType = w.xAxis?.type;
+          const anomalies = detectAnomalies(result, w.title || "Visual", xAxisType);
+          if (anomalies.length > 0) {
+            const a = anomalies[0];
+            if (a.severity === "critical") {
+              toast.error(a.message, {
+                duration: 8000,
+                action: {
+                  label: "Investigate",
+                  onClick: () => setDrillDown({ label: a.label, column: a.column }),
+                },
+              });
+            } else {
+              toast(a.message, {
+                duration: 6000,
+                action: {
+                  label: "Investigate",
+                  onClick: () => setDrillDown({ label: a.label, column: a.column }),
+                },
+              });
+            }
           }
         }
       } catch (err) {

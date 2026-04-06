@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1009,6 +1010,132 @@ class TestTOTPConfirmEndpoint:
             )
 
         assert resp.status_code == 422
+
+
+# =============================================================================
+# Registration Endpoint Tests
+# =============================================================================
+
+class TestRegisterEndpoint:
+    """POST /api/v1/auth/register"""
+
+    def _make_client(
+        self,
+        user: Optional[MagicMock] = None,
+        *,
+        registration_open: bool = False,
+        allowed_domains: str = "",
+    ) -> tuple[TestClient, AsyncMock]:
+        app = _build_test_app()
+        db_session = _make_db_session(user)
+
+        async def override_db():
+            yield db_session
+
+        from app.dependencies import get_db
+        app.dependency_overrides[get_db] = override_db
+
+        settings = SimpleNamespace(
+            REGISTRATION_OPEN=registration_open,
+            ALLOWED_EMAIL_DOMAINS=allowed_domains,
+        )
+        app.state._settings_patch = patch(
+            "app.api.v1.routes_auth.get_settings",
+            return_value=settings,
+        )
+        app.state._settings_patch.start()
+
+        client = TestClient(app, raise_server_exceptions=False)
+        return client, db_session
+
+    @staticmethod
+    def _cleanup_client(client: TestClient) -> None:
+        p = getattr(client.app.state, "_settings_patch", None)
+        if p is not None:
+            p.stop()
+
+    def test_register_closed_returns_403(self):
+        client, _ = self._make_client(registration_open=False)
+        try:
+            resp = client.post(
+                "/api/v1/auth/register",
+                json={
+                    "email": "new.user@example.com",
+                    "name": "New User",
+                    "password": "StrongPass123",
+                    "department": "Finance",
+                },
+            )
+            assert resp.status_code == 403
+            assert resp.json()["error"]["code"] == "REGISTRATION_CLOSED"
+        finally:
+            self._cleanup_client(client)
+
+    def test_register_open_allows_domain_and_creates_user(self):
+        client, db_session = self._make_client(
+            user=None,
+            registration_open=True,
+            allowed_domains="example.com,company.org",
+        )
+        try:
+            resp = client.post(
+                "/api/v1/auth/register",
+                json={
+                    "email": "new.user@example.com",
+                    "name": "New User",
+                    "password": "StrongPass123",
+                    "department": "Finance",
+                },
+            )
+            assert resp.status_code == 201
+            body = resp.json()
+            assert "user_id" in body
+            assert db_session.add.called
+            assert db_session.commit.called
+        finally:
+            self._cleanup_client(client)
+
+    def test_register_open_rejects_disallowed_domain(self):
+        client, _ = self._make_client(
+            user=None,
+            registration_open=True,
+            allowed_domains="company.org",
+        )
+        try:
+            resp = client.post(
+                "/api/v1/auth/register",
+                json={
+                    "email": "new.user@example.com",
+                    "name": "New User",
+                    "password": "StrongPass123",
+                    "department": "Finance",
+                },
+            )
+            assert resp.status_code == 403
+            assert resp.json()["error"]["code"] == "REGISTRATION_CLOSED"
+        finally:
+            self._cleanup_client(client)
+
+    def test_register_duplicate_email_returns_409(self):
+        client, _ = self._make_client(
+            user=_make_user(),
+            registration_open=True,
+            allowed_domains="example.com",
+        )
+        try:
+            resp = client.post(
+                "/api/v1/auth/register",
+                json={
+                    "email": "user@example.com",
+                    "name": "User",
+                    "password": "StrongPass123",
+                    "department": "Engineering",
+                },
+            )
+            assert resp.status_code == 409
+            assert resp.json()["error"]["code"] == "DUPLICATE_RESOURCE"
+        finally:
+            self._cleanup_client(client)
 
 
 # =============================================================================

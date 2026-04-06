@@ -23,6 +23,10 @@ services:
         --log-level debug
 
   frontend:
+    build:
+      target: development
+    environment:
+      - VITE_DEV_PROXY_TARGET=http://backend:8000
     volumes:
       - ./frontend:/app:cached
       - /app/node_modules

@@ -2,8 +2,8 @@
 # Smart BI Agent — Frontend Dockerfile (Multi-stage)
 # =============================================================================
 
-# --- Build stage ---
-FROM node:20-alpine AS build
+# --- Development stage ---
+FROM node:20-alpine AS development
 
 WORKDIR /app
 
@@ -11,6 +11,11 @@ COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit
 
 COPY frontend/ ./
+EXPOSE 3000
+
+# --- Build stage ---
+FROM development AS build
+
 RUN npm run build
 
 # --- Production stage: Serve static via Nginx ---

@@ -73,7 +73,7 @@ export default function TOTPSetupPage() {
     };
     init();
     return () => { cancelled = true; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const copySecret = useCallback(async () => {
     if (!setupData?.secret) return;

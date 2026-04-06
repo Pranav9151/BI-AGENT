@@ -418,9 +418,7 @@ export function ERDDiagram({ tables, relationships }: ERDDiagramProps) {
                 })}
 
                 {/* Overflow indicator */}
-                {tables
-                  .find((t) => t.name === box.name)
-                  ?.columns.length! > MAX_COLS_SHOWN && (
+                {(tables.find((t) => t.name === box.name)?.columns.length ?? 0) > MAX_COLS_SHOWN && (
                   <text
                     x={box.x + box.w / 2}
                     y={box.y + box.h - 4}

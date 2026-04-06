@@ -26,7 +26,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.errors.exceptions import LLMProviderError
 from app.llm.base import BaseLLMProvider, LLMRequest, LLMResponse
-from app.llm.groq_provider import GroqProvider
 from app.logging.structured import get_logger
 from app.models.llm_provider import LLMProvider
 from app.security.key_manager import KeyPurpose
@@ -37,25 +36,37 @@ log = get_logger(__name__)
 # ─── Provider Registry ───────────────────────────────────────────────────────
 # Add new providers here as they're built.
 
-_PROVIDER_MAP: dict[str, type[BaseLLMProvider]] = {
-    "groq": GroqProvider,
-    # "openai": OpenAIProvider,     — future
-    # "claude": ClaudeProvider,     — future
-    # "gemini": GeminiProvider,     — future
-    # "deepseek": DeepSeekProvider, — future
-    # "ollama": OllamaProvider,     — future
+_SUPPORTED_PROVIDER_TYPES: set[str] = {
+    "groq",
+    # "openai",     # future
+    # "claude",     # future
+    # "gemini",     # future
+    # "deepseek",   # future
+    # "ollama",     # future
 }
 
 
 def get_provider_instance(provider_type: str) -> BaseLLMProvider:
     """Get a provider implementation by type string."""
-    cls = _PROVIDER_MAP.get(provider_type)
-    if cls is None:
+    if provider_type not in _SUPPORTED_PROVIDER_TYPES:
         raise LLMProviderError(
             message=f"Provider type '{provider_type}' is not yet supported.",
-            detail=f"No implementation in _PROVIDER_MAP for: {provider_type}",
+            detail=f"No implementation for provider_type={provider_type}",
         )
-    return cls()
+    if provider_type == "groq":
+        try:
+            from app.llm.groq_provider import GroqProvider
+        except ModuleNotFoundError as exc:
+            raise LLMProviderError(
+                message="Groq provider dependency is missing.",
+                detail="Install optional dependency: pip install groq",
+            ) from exc
+        return GroqProvider()
+
+    raise LLMProviderError(
+        message=f"Provider type '{provider_type}' is not yet supported.",
+        detail=f"No implementation for provider_type={provider_type}",
+    )
 
 
 async def get_active_providers(db: AsyncSession) -> list[LLMProvider]:
@@ -119,7 +130,7 @@ async def generate_with_fallback(
 
     for provider_model in providers:
         # Check if we have an implementation for this type
-        if provider_model.provider_type not in _PROVIDER_MAP:
+        if provider_model.provider_type not in _SUPPORTED_PROVIDER_TYPES:
             log.warning(
                 "llm.factory.unsupported_type",
                 provider=provider_model.name,

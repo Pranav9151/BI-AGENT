@@ -176,7 +176,7 @@ export default function StudioPage() {
     prevCollapsed.current = sidebar.collapsed;
     if (!sidebar.collapsed) sidebar.setCollapsed(true);
     return () => { sidebar.setCollapsed(prevCollapsed.current); };
-  }, []); // eslint-disable-line
+  }, []);
 
   // ── Effects (AFTER all callbacks — TDZ-safe) ──
 
@@ -189,7 +189,7 @@ export default function StudioPage() {
       });
     }, autoRefresh * 1000);
     return () => clearInterval(timer);
-  }, [autoRefresh, dashboard.widgets.length]); // eslint-disable-line
+  }, [autoRefresh, dashboard.widgets.length]);
 
   // Keyboard shortcuts
   useEffect(() => {

@@ -200,6 +200,9 @@ class Settings(BaseSettings):
     LOCKOUT_DURATION_MINUTES: int = 30
     PROGRESSIVE_DELAY_FACTOR: int = 2
 
+    # Proxy trust — set False if backend is directly exposed (no Nginx)
+    TRUST_PROXY_HEADERS: bool = True
+
     # Registration (T53)
     REGISTRATION_OPEN: bool = False  # Closed by default
 

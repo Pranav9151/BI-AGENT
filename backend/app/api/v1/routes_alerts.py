@@ -215,9 +215,13 @@ async def _delete_alert(redis, alert_id: str, user_id: str) -> None:
 
 async def _list_user_alerts(redis, user_id: str) -> list[dict]:
     ids = await redis.smembers(f"{_ALERT_INDEX_PREFIX}{user_id}")
+    if not ids:
+        return []
+    # Single round-trip instead of N individual GETs
+    keys = [f"{_ALERT_KEY_PREFIX}{aid}" for aid in ids]
+    values = await redis.mget(*keys)
     alerts: list[dict] = []
-    for aid in ids:
-        raw = await redis.get(f"{_ALERT_KEY_PREFIX}{aid}")
+    for raw in values:
         if not raw:
             continue
         try:

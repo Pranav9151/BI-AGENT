@@ -2,7 +2,7 @@
 name = "smart-bi-agent"
 version = "3.1.0"
 description = "AI-powered Business Intelligence platform — Natural Language to SQL"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 authors = [
     {name = "Waqar", email = "waqar@smartbiagent.com"},
 ]

@@ -89,13 +89,16 @@ def _classify_endpoint(path: str, settings) -> tuple[int, str]:
 
 def _get_client_ip(request: Request) -> str:
     """
-    Extract the real client IP. Trusts X-Forwarded-For when set
-    (Nginx strips/rewrites this so we can trust it in our setup).
+    Extract the real client IP. Only trusts X-Forwarded-For when the
+    TRUST_PROXY_HEADERS setting is True (default True — assumes Nginx
+    is the sole entry point). When False, always uses the direct
+    connection IP to prevent spoofing.
     """
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        # Take the first IP (leftmost = originating client)
-        return xff.split(",")[0].strip()
+    settings = get_settings()
+    if getattr(settings, "TRUST_PROXY_HEADERS", True):
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            return xff.split(",")[0].strip()
     if request.client:
         return request.client.host
     return "unknown"

@@ -1,4 +1,5 @@
 var _a;
+/// <reference types="vitest" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath, URL } from "node:url";
@@ -9,6 +10,13 @@ export default defineConfig({
         alias: {
             "@": fileURLToPath(new URL("./src", import.meta.url)),
         },
+    },
+    // ── Test Configuration ─────────────────────────────────────────────────────
+    test: {
+        globals: true,
+        environment: "jsdom",
+        setupFiles: ["./src/__tests__/setup.ts"],
+        include: ["src/**/*.test.{ts,tsx}"],
     },
     // ── Monaco Web Worker fix ──────────────────────────────────────────────────
     // Monaco spins up Web Workers for language services (JSON, TypeScript, CSS).

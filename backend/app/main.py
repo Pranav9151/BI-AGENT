@@ -178,6 +178,14 @@ def create_app() -> FastAPI:
     from app.middleware.content_type import ContentTypeValidationMiddleware
     app.add_middleware(ContentTypeValidationMiddleware)
 
+    # 4b. Request logging (method, path, status, duration)
+    from app.middleware.request_logging import RequestLoggingMiddleware
+    app.add_middleware(RequestLoggingMiddleware)
+
+    # 4a. Prometheus metrics collection
+    from app.middleware.metrics import MetricsMiddleware
+    app.add_middleware(MetricsMiddleware)
+
     # 4. Rate limiter
     from app.middleware.rate_limiter import RateLimiterMiddleware
     app.add_middleware(RateLimiterMiddleware)
@@ -330,6 +338,12 @@ def _register_health_routes(app: FastAPI) -> None:
                 "ollama_exposed": ollama_exposed,
             },
         }
+
+    @app.get("/metrics", tags=["observability"], include_in_schema=False)
+    async def prometheus_metrics():
+        """Prometheus metrics endpoint. No auth required (bind to internal network)."""
+        from app.middleware.metrics import metrics_response
+        return metrics_response()
 
 
 # =============================================================================

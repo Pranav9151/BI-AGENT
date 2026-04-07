@@ -11,14 +11,21 @@ PURPOSE:
         1 = primary, 2 = secondary, etc.
     If the primary fails, the next active provider is tried.
 
+CIRCUIT BREAKER:
+    After CIRCUIT_BREAKER_THRESHOLD consecutive failures, a provider is
+    marked "open" (skipped) for CIRCUIT_BREAKER_COOLDOWN_SECONDS. This
+    prevents hammering a dead provider on every user request and avoids
+    cascading latency spikes from LLM timeouts.
+
 ADDING A NEW PROVIDER:
     1. Create backend/app/llm/{name}_provider.py implementing BaseLLMProvider
-    2. Add to _PROVIDER_MAP below
+    2. Add to _SUPPORTED_PROVIDER_TYPES below
     3. Done — the factory routes automatically
 """
 
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from sqlalchemy import select
@@ -31,6 +38,63 @@ from app.models.llm_provider import LLMProvider
 from app.security.key_manager import KeyPurpose
 
 log = get_logger(__name__)
+
+
+# ─── Circuit Breaker ─────────────────────────────────────────────────────────
+# In-memory per-worker state. Safe because each uvicorn worker has its own
+# circuit breaker — worst case a provider gets a few extra attempts across
+# workers during the transition window.
+
+CIRCUIT_BREAKER_THRESHOLD = 3       # consecutive failures before tripping
+CIRCUIT_BREAKER_COOLDOWN_SECONDS = 60  # seconds to skip a tripped provider
+
+_circuit_state: dict[str, dict] = {}
+# Format: { "provider_name": { "failures": int, "tripped_at": float | None } }
+
+
+def _is_circuit_open(provider_name: str) -> bool:
+    """Check if a provider's circuit breaker is open (should be skipped)."""
+    state = _circuit_state.get(provider_name)
+    if not state or not state.get("tripped_at"):
+        return False
+    elapsed = time.monotonic() - state["tripped_at"]
+    if elapsed > CIRCUIT_BREAKER_COOLDOWN_SECONDS:
+        # Cooldown expired — half-open: allow one attempt
+        state["tripped_at"] = None
+        state["failures"] = 0
+        log.info("llm.circuit_breaker.half_open", provider=provider_name)
+        return False
+    return True
+
+
+def _record_failure(provider_name: str) -> None:
+    """Record a provider failure. Trip breaker if threshold reached."""
+    state = _circuit_state.setdefault(provider_name, {"failures": 0, "tripped_at": None})
+    state["failures"] = state.get("failures", 0) + 1
+    if state["failures"] >= CIRCUIT_BREAKER_THRESHOLD and not state.get("tripped_at"):
+        state["tripped_at"] = time.monotonic()
+        log.warning(
+            "llm.circuit_breaker.tripped",
+            provider=provider_name,
+            cooldown_seconds=CIRCUIT_BREAKER_COOLDOWN_SECONDS,
+        )
+        try:
+            from app.middleware.metrics import set_circuit_breaker_state, track_llm_failure
+            set_circuit_breaker_state(provider_name, True)
+            track_llm_failure(provider_name)
+        except Exception:
+            pass
+
+
+def _record_success(provider_name: str) -> None:
+    """Reset circuit breaker state on success."""
+    if provider_name in _circuit_state:
+        _circuit_state[provider_name] = {"failures": 0, "tripped_at": None}
+    try:
+        from app.middleware.metrics import set_circuit_breaker_state
+        set_circuit_breaker_state(provider_name, False)
+    except Exception:
+        pass
 
 
 # ─── Provider Registry ───────────────────────────────────────────────────────
@@ -129,6 +193,15 @@ async def generate_with_fallback(
     errors: list[str] = []
 
     for provider_model in providers:
+        # Circuit breaker: skip providers that have been failing
+        if _is_circuit_open(provider_model.name):
+            log.info(
+                "llm.factory.circuit_open_skipping",
+                provider=provider_model.name,
+            )
+            errors.append(f"{provider_model.name}: circuit breaker open (cooling down)")
+            continue
+
         # Check if we have an implementation for this type
         if provider_model.provider_type not in _SUPPORTED_PROVIDER_TYPES:
             log.warning(
@@ -172,6 +245,12 @@ async def generate_with_fallback(
                 api_key=api_key or "",
                 base_url=provider_model.base_url,
             )
+            _record_success(provider_model.name)
+            try:
+                from app.middleware.metrics import track_llm_request
+                track_llm_request(provider_model.name, (response.latency_ms or 0) / 1000.0)
+            except Exception:
+                pass
             log.info(
                 "llm.factory.success",
                 provider=provider_model.name,
@@ -182,6 +261,7 @@ async def generate_with_fallback(
             return response
 
         except LLMProviderError as exc:
+            _record_failure(provider_model.name)
             log.warning(
                 "llm.factory.provider_failed",
                 provider=provider_model.name,

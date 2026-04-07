@@ -48,6 +48,23 @@ log = get_logger(__name__)
 router = APIRouter()
 
 
+def _get_embed_signing_secret() -> str:
+    """Derive a dedicated embed signing key via HKDF — never use raw master key."""
+    from cryptography.hazmat.primitives.hashes import SHA256
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from app.security.key_manager import get_key_manager as _km
+    km = _km()
+    # Derive a stable hex secret using a unique info string so this key
+    # is cryptographically independent from all other derived keys.
+    hkdf = HKDF(
+        algorithm=SHA256(),
+        length=32,
+        salt=b"smart-bi-agent-hmac-salt-v1",
+        info=b"smart-bi-agent:hmac:embed_token_signing:v1",
+    )
+    return hkdf.derive(km._master_key).hex()
+
+
 # =============================================================================
 # Schemas
 # =============================================================================
@@ -185,7 +202,7 @@ async def create_embed_token(
         user_id=user_id,
         expires_hours=body.expires_hours,
         allowed_origin=allowed_origin,
-        secret=settings.ENCRYPTION_MASTER_KEY,
+        secret=_get_embed_signing_secret(),
     )
     ttl_seconds = max(int(payload["exp"] - time.time()), 1)
     await redis.set(f"embed:token:{payload['jti']}", "1", ex=ttl_seconds)
@@ -232,7 +249,7 @@ async def get_embed_config(
     Used by the embed viewer (iframe) to render the dashboard.
     """
     settings = get_settings()
-    payload = _validate_signed_token(token, settings.ENCRYPTION_MASTER_KEY)
+    payload = _validate_signed_token(token, _get_embed_signing_secret())
     if payload is None:
         raise ResourceNotFoundError(
             message="Invalid or expired embed token.",
@@ -273,10 +290,19 @@ async def get_embed_config(
     except Exception:
         config = {}
 
-    return EmbedConfigResponse(
+    embed_response = EmbedConfigResponse(
         dashboard_id=str(dashboard.id),
         name=dashboard.name,
         description=dashboard.description or "",
         config=config,
         theme="dark",
     )
+
+    # Enforce allowed_origin from the token as a CORS header so browsers
+    # reject cross-origin embed attempts from unauthorized domains.
+    from fastapi.responses import JSONResponse
+    allowed_origin = payload.get("allowed_origin", "")
+    resp = JSONResponse(content=embed_response.model_dump())
+    if allowed_origin:
+        resp.headers["Access-Control-Allow-Origin"] = allowed_origin
+    return resp

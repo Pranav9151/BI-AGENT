@@ -303,9 +303,10 @@ async def login(
         raise InvalidCredentialsError()
 
     # ------------------------------------------------------------------
-    # Step 9: Admin TOTP gate
+    # Step 9: Admin TOTP gate (skipped in development)
     # ------------------------------------------------------------------
-    if user.role == "admin":
+    settings = get_settings()
+    if user.role == "admin" and not settings.is_development:
         pre_totp_token = create_pre_totp_token(
             user_id=str(user.id),
             email=user.email,

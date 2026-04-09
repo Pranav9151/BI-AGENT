@@ -324,7 +324,15 @@ export function useWidgetOps({
           }
         }
       } catch (err) {
-        const msg = err instanceof ApiRequestError ? err.message : "Query failed";
+        let msg = err instanceof ApiRequestError ? err.message : "Query failed";
+        const lower = msg.toLowerCase();
+        if (lower.includes("connect") || lower.includes("password") || lower.includes("authentication")) {
+          msg += " — Check database credentials in Settings → Connections.";
+        } else if (lower.includes("provider") || lower.includes("llm") || lower.includes("groq") || lower.includes("api key")) {
+          msg += " — Check AI provider in Settings → LLM Providers.";
+        } else if (lower.includes("circuit breaker")) {
+          msg = "AI provider temporarily unavailable. Retry in 60 seconds.";
+        }
         setDashboard((d) => ({
           ...d,
           widgets: d.widgets.map((x) =>
@@ -369,8 +377,9 @@ export function useWidgetOps({
         for (const w of widgets) {
           setTimeout(() => runWidget(w.id), 500 * widgets.indexOf(w));
         }
-      } catch {
-        toast.error("AI generation failed");
+      } catch (err) {
+        const msg = err instanceof ApiRequestError ? err.message : "AI generation failed";
+        toast.error(msg, { description: "Make sure you have an active AI provider and database connection configured.", duration: 8000 });
       }
     },
     [dashboard.connectionId, setDashboard, runWidget]

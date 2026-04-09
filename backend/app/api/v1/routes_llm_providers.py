@@ -418,7 +418,29 @@ async def create_provider(
     if body.is_default:
         await _clear_existing_default(db)
 
-    # Step 5: Encrypt API key — plaintext never stored (T12)
+    # Step 5: Validate API key with a real test call
+    if body.api_key:
+        try:
+            from app.llm.factory import get_provider_instance
+            instance = get_provider_instance(body.provider_type.value)
+            ok, latency, err = await instance.test_connectivity(
+                api_key=body.api_key,
+                model=body.model_sql,
+                base_url=body.base_url,
+            )
+            if not ok:
+                raise ValidationError(
+                    message=f"API key validation failed: {err or 'Could not connect to provider.'}",
+                    detail="Test the API key and try again.",
+                )
+            log.info("llm_providers.api_key_validated", provider_type=body.provider_type.value, latency_ms=latency)
+        except ValidationError:
+            raise
+        except Exception as exc:
+            log.warning("llm_providers.api_key_validation_skipped", error=str(exc))
+            # Don't block creation if the test infrastructure fails — just warn
+
+    # Step 6: Encrypt API key — plaintext never stored (T12)
     encrypted_api_key: Optional[str] = None
     if body.api_key:
         encrypted_api_key = key_manager.encrypt(body.api_key, KeyPurpose.LLM_API_KEYS)

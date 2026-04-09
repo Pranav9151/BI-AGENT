@@ -11,13 +11,13 @@
  *   - SSRF validation happens server-side (not client-side)
  */
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Save, Loader2 } from "lucide-react";
+import { ArrowLeft, Save, Loader2, PlugZap, CheckCircle2, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import { api, ApiRequestError } from "@/lib/api";
@@ -169,6 +169,72 @@ export default function ConnectionFormPage() {
   });
 
   const isPending = createMutation.isPending || updateMutation.isPending;
+
+  // ── Test Connection (inline, before saving) ──
+  const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "failed">("idle");
+  const [testError, setTestError] = useState<string | null>(null);
+
+  const handleTestConnection = async () => {
+    const data = watch();
+    if (data.db_type !== "bigquery" && !data.host.trim()) {
+      toast.error("Enter a host before testing"); return;
+    }
+    if (!data.username) {
+      toast.error("Enter credentials before testing"); return;
+    }
+
+    setTestStatus("testing");
+    setTestError(null);
+
+    try {
+      if (isEdit && id && !data.username) {
+        // Edit mode with no new credentials — test saved connection
+        const result = await api.post<{ success: boolean; error?: string; latency_ms?: number }>(
+          `/connections/${id}/test`
+        );
+        if (result.success) {
+          setTestStatus("success");
+          toast.success(`Connected successfully (${result.latency_ms}ms)`);
+        } else {
+          setTestStatus("failed");
+          setTestError(result.error || "Connection failed");
+          toast.error(result.error || "Connection failed");
+        }
+      } else {
+        // Create mode OR edit with new credentials — test inline without saving
+        const schemas = data.allowed_schemas.split(",").map((s) => s.trim()).filter(Boolean);
+        const result = await api.post<{ success: boolean; error?: string; latency_ms?: number }>(
+          `/connections/test-inline`,
+          {
+            name: data.name || "test",
+            db_type: data.db_type,
+            host: data.host,
+            port: data.port,
+            database_name: data.database_name,
+            username: data.username,
+            password: data.password,
+            ssl_mode: data.ssl_mode,
+            query_timeout: data.query_timeout,
+            max_rows: data.max_rows,
+            allowed_schemas: schemas,
+          }
+        );
+        if (result.success) {
+          setTestStatus("success");
+          toast.success(`Connected successfully (${result.latency_ms}ms)`);
+        } else {
+          setTestStatus("failed");
+          setTestError(result.error || "Connection failed");
+          toast.error(result.error || "Connection failed");
+        }
+      }
+    } catch (err) {
+      setTestStatus("failed");
+      const msg = err instanceof ApiRequestError ? err.message : "Test failed";
+      setTestError(msg);
+      toast.error(msg);
+    }
+  };
 
   const onSubmit = (data: ConnectionFormData) => {
     // Host is required for non-BigQuery types
@@ -418,14 +484,36 @@ export default function ConnectionFormPage() {
           >
             Cancel
           </Button>
-          <Button
-            type="submit"
-            icon={<Save className="h-4 w-4" />}
-            isLoading={isPending}
-            disabled={isEdit && !isDirty}
-          >
-            {isEdit ? "Save Changes" : "Create Connection"}
-          </Button>
+          <div className="flex items-center gap-3">
+            {/* Test Connection Button */}
+            <Button
+              type="button"
+              variant="ghost"
+              icon={
+                testStatus === "testing" ? <Loader2 className="h-4 w-4 animate-spin" /> :
+                testStatus === "success" ? <CheckCircle2 className="h-4 w-4 text-emerald-400" /> :
+                testStatus === "failed" ? <XCircle className="h-4 w-4 text-red-400" /> :
+                <PlugZap className="h-4 w-4" />
+              }
+              onClick={handleTestConnection}
+              disabled={testStatus === "testing"}
+            >
+              {testStatus === "success" ? "Connected" : testStatus === "failed" ? "Failed" : "Test Connection"}
+            </Button>
+            {testError && (
+              <span className="text-xs text-red-400 max-w-[200px] truncate" title={testError}>
+                {testError}
+              </span>
+            )}
+            <Button
+              type="submit"
+              icon={<Save className="h-4 w-4" />}
+              isLoading={isPending}
+              disabled={isEdit && !isDirty}
+            >
+              {isEdit ? "Save Changes" : "Create Connection"}
+            </Button>
+          </div>
         </div>
       </form>
     </div>

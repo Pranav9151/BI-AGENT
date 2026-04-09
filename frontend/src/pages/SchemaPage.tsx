@@ -939,7 +939,7 @@ export default function SchemaPage() {
         </div>
       )}
 
-      {error && <Alert variant="error">{error instanceof ApiRequestError ? error.message : "Failed to load schema"}</Alert>}
+      {error && <Alert variant="error">{error instanceof ApiRequestError ? (error.message.toLowerCase().includes("connect") || error.message.toLowerCase().includes("auth") || error.message.toLowerCase().includes("password") ? `${error.message} — Go to Connections and verify your database credentials.` : error.message) : "Failed to load schema — check your database connection."}</Alert>}
       {isLoading && selectedConnection && (
         <Card className="p-12"><div className="flex items-center justify-center gap-3"><Loader2 className="h-5 w-5 text-blue-400 animate-spin" /><span className="text-sm text-slate-400">Introspecting database schema…</span></div></Card>
       )}

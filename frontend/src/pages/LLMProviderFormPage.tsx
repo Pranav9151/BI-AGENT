@@ -11,13 +11,13 @@
  *   - Ollama does not require an API key (self-hosted)
  */
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Save, Loader2 } from "lucide-react";
+import { ArrowLeft, Save, Loader2, PlugZap, CheckCircle2, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import { api, ApiRequestError } from "@/lib/api";
@@ -191,6 +191,38 @@ export default function LLMProviderFormPage() {
   });
 
   const isPending = createMutation.isPending || updateMutation.isPending;
+
+  // ── Test Provider ──
+  const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "failed">("idle");
+  const [testError, setTestError] = useState<string | null>(null);
+
+  const handleTestProvider = async () => {
+    if (isEdit && id) {
+      setTestStatus("testing");
+      setTestError(null);
+      try {
+        const result = await api.post<{ success: boolean; error?: string; latency_ms?: number }>(
+          `/llm-providers/${id}/test`
+        );
+        if (result.success) {
+          setTestStatus("success");
+          toast.success(`Provider connected (${result.latency_ms}ms)`);
+        } else {
+          setTestStatus("failed");
+          setTestError(result.error || "Provider test failed");
+          toast.error(result.error || "Provider test failed");
+        }
+      } catch (err) {
+        setTestStatus("failed");
+        const msg = err instanceof ApiRequestError ? err.message : "Test failed";
+        setTestError(msg);
+        toast.error(msg);
+      }
+    } else {
+      toast.info("API key will be validated when you click Create Provider");
+      setTestStatus("idle");
+    }
+  };
 
   const onSubmit = (data: ProviderFormData) => {
     if (isEdit) {
@@ -442,14 +474,37 @@ export default function LLMProviderFormPage() {
           >
             Cancel
           </Button>
-          <Button
-            type="submit"
-            icon={<Save className="h-4 w-4" />}
-            isLoading={isPending}
-            disabled={isEdit && !isDirty}
-          >
-            {isEdit ? "Save Changes" : "Create Provider"}
-          </Button>
+          <div className="flex items-center gap-3">
+            {isEdit && (
+              <Button
+                type="button"
+                variant="ghost"
+                icon={
+                  testStatus === "testing" ? <Loader2 className="h-4 w-4 animate-spin" /> :
+                  testStatus === "success" ? <CheckCircle2 className="h-4 w-4 text-emerald-400" /> :
+                  testStatus === "failed" ? <XCircle className="h-4 w-4 text-red-400" /> :
+                  <PlugZap className="h-4 w-4" />
+                }
+                onClick={handleTestProvider}
+                disabled={testStatus === "testing"}
+              >
+                {testStatus === "success" ? "Connected" : testStatus === "failed" ? "Failed" : "Test Provider"}
+              </Button>
+            )}
+            {testError && (
+              <span className="text-xs text-red-400 max-w-[200px] truncate" title={testError}>
+                {testError}
+              </span>
+            )}
+            <Button
+              type="submit"
+              icon={<Save className="h-4 w-4" />}
+              isLoading={isPending}
+              disabled={isEdit && !isDirty}
+            >
+              {isEdit ? "Save Changes" : "Create Provider"}
+            </Button>
+          </div>
         </div>
       </form>
     </div>

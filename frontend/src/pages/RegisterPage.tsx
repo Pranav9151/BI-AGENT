@@ -64,7 +64,11 @@ export default function RegisterPage() {
       });
       setSuccess(true);
     } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : "Registration failed. Please try again.");
+      setError(err instanceof ApiRequestError
+        ? (err.fields?.length
+            ? err.fields.map((f: { field: string; issue: string }) => `${f.field.replace('body → ', '')}: ${f.issue}`).join('. ')
+            : err.message)
+        : "Registration failed. Please try again.");
     } finally {
       setLoading(false);
     }

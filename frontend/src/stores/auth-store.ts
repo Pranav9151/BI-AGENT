@@ -157,7 +157,9 @@ export const useAuthStore = create<AuthState>((set, get) => {
       } catch (err) {
         const message =
           err instanceof ApiRequestError
-            ? err.message
+            ? (err.fields?.length
+                ? err.fields.map((f: { field: string; issue: string }) => `${f.field.replace('body → ', '')}: ${f.issue}`).join('. ')
+                : err.message)
             : "An unexpected error occurred.";
         set({ isLoading: false, error: message });
         throw err;

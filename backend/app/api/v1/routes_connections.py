@@ -70,6 +70,7 @@ from app.errors.exceptions import (
     DuplicateResourceError,
     ResourceNotFoundError,
     SSRFError,
+    ValidationError,
 )
 from app.logging.structured import get_logger
 from app.models.connection import Connection
@@ -183,6 +184,66 @@ async def _tcp_probe(ip: str, port: int, timeout: float = _TCP_CONNECT_TIMEOUT) 
         return False, None, f"Network error: {e.strerror}"
     except Exception as e:
         return False, None, f"Unexpected error: {type(e).__name__}"
+
+
+async def _validate_db_credentials(
+    db_type: str,
+    host: str,
+    port: int,
+    database_name: str,
+    username: str,
+    password: str,
+    ssl_mode: str = "disable",
+) -> tuple[bool, Optional[str]]:
+    """
+    Attempt a real database login to validate credentials.
+    Returns (success, error_message).
+    """
+    if db_type in ("postgresql", "postgres"):
+        try:
+            import asyncpg
+            ssl_ctx = "require" if ssl_mode in ("require", "verify-ca", "verify-full") else False
+            conn = await asyncio.wait_for(
+                asyncpg.connect(
+                    host=host, port=port, database=database_name,
+                    user=username, password=password, ssl=ssl_ctx,
+                ),
+                timeout=10,
+            )
+            await conn.close()
+            return True, None
+        except asyncio.TimeoutError:
+            return False, "Connection timed out — check host and port."
+        except Exception as exc:
+            msg = str(exc)
+            if "password authentication failed" in msg:
+                return False, "Authentication failed — check username and password."
+            if "does not exist" in msg:
+                return False, f"Database '{database_name}' does not exist."
+            if "Connection refused" in msg:
+                return False, "Connection refused — check host and port."
+            return False, f"Connection failed: {msg[:200]}"
+
+    elif db_type == "mysql":
+        try:
+            import aiomysql
+            conn = await asyncio.wait_for(
+                aiomysql.connect(
+                    host=host, port=port, db=database_name,
+                    user=username, password=password,
+                ),
+                timeout=10,
+            )
+            conn.close()
+            return True, None
+        except Exception as exc:
+            msg = str(exc)
+            if "Access denied" in msg:
+                return False, "Authentication failed — check username and password."
+            return False, f"Connection failed: {msg[:200]}"
+
+    # For BigQuery/Snowflake/MSSQL — skip credential check (different auth model)
+    return True, None
 
 
 # =============================================================================
@@ -308,6 +369,23 @@ async def create_connection(
             detail=f"Duplicate connection name: {body.name}",
         )
 
+    # Step 2b: Validate credentials with real DB login
+    if body.username and body.password:
+        cred_ok, cred_err = await _validate_db_credentials(
+            db_type=body.db_type.value,
+            host=body.host,
+            port=body.port,
+            database_name=body.database_name,
+            username=body.username,
+            password=body.password,
+            ssl_mode=body.ssl_mode.value,
+        )
+        if not cred_ok:
+            raise ValidationError(
+                message=cred_err or "Could not connect to the database.",
+                detail="Credential validation failed before saving.",
+            )
+
     # Step 3: Encrypt credentials — plaintext never stored
     encrypted = _encrypt_credentials(key_manager, body.username, body.password)
 
@@ -430,15 +508,30 @@ async def update_connection(
 
     # Re-encrypt credentials if either username or password is provided
     if body.username is not None or body.password is not None:
-        # Require both when updating credentials — partial credential update is insecure
         if body.username is None or body.password is None:
-            # Fetch existing to fill in the missing part — allows changing only password
             existing = _decrypt_credentials(key_manager, conn.encrypted_credentials)
             new_username = body.username if body.username is not None else existing["username"]
             new_password = body.password if body.password is not None else existing["password"]
         else:
             new_username = body.username
             new_password = body.password
+
+        # Validate new credentials before saving
+        cred_ok, cred_err = await _validate_db_credentials(
+            db_type=conn.db_type or "postgresql",
+            host=new_host,
+            port=new_port,
+            database_name=body.database_name if body.database_name is not None else (conn.database_name or ""),
+            username=new_username,
+            password=new_password,
+            ssl_mode=body.ssl_mode.value if body.ssl_mode is not None else (conn.ssl_mode or "disable"),
+        )
+        if not cred_ok:
+            raise ValidationError(
+                message=cred_err or "Could not authenticate with the database.",
+                detail="Credential validation failed.",
+            )
+
         conn.encrypted_credentials = _encrypt_credentials(key_manager, new_username, new_password)
         changed_fields.append("credentials")
 
@@ -477,39 +570,105 @@ async def update_connection(
 async def deactivate_connection(
     connection_id: uuid.UUID,
     request: Request,
+    permanent: bool = Query(False, description="If true, permanently delete instead of soft-deactivate"),
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
     audit=Depends(get_audit_writer),
 ) -> Response:
     """
-    Soft-deactivate by setting is_active=False.
-
-    Hard deletion is never performed — connections may be referenced by
-    saved queries, conversations, and the audit trail.
+    Deactivate or permanently delete a connection.
+    Default: soft-deactivate (is_active=False).
+    With ?permanent=true: hard delete from database.
     """
     conn = await _get_conn_or_404(connection_id, db)
 
-    conn.is_active = False
-    await db.commit()
-
-    log.warning(
-        "connections.deactivated",
-        admin_id=admin["user_id"],
-        connection_id=str(connection_id),
-        name=conn.name,
-    )
-
-    if audit:
-        await audit.log(
-            execution_status="connection.deactivated",
-            question=f"Admin deactivated connection: {conn.name} ({connection_id})",
-            user_id=admin["user_id"],
-            connection_id=connection_id,
-            ip_address=_get_client_ip(request),
-            request_id=getattr(request.state, "request_id", None),
+    if permanent:
+        await db.delete(conn)
+        await db.commit()
+        log.warning(
+            "connections.deleted_permanently",
+            admin_id=admin["user_id"],
+            connection_id=str(connection_id),
+            name=conn.name,
         )
+        if audit:
+            await audit.log(
+                execution_status="connection.deleted",
+                question=f"Admin permanently deleted connection: {conn.name} ({connection_id})",
+                user_id=admin["user_id"],
+                connection_id=connection_id,
+                ip_address=_get_client_ip(request),
+                request_id=getattr(request.state, "request_id", None),
+            )
+    else:
+        conn.is_active = False
+        await db.commit()
+        log.warning(
+            "connections.deactivated",
+            admin_id=admin["user_id"],
+            connection_id=str(connection_id),
+            name=conn.name,
+        )
+        if audit:
+            await audit.log(
+                execution_status="connection.deactivated",
+                question=f"Admin deactivated connection: {conn.name} ({connection_id})",
+                user_id=admin["user_id"],
+                connection_id=connection_id,
+                ip_address=_get_client_ip(request),
+                request_id=getattr(request.state, "request_id", None),
+            )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# =============================================================================
+# POST /test-inline  — Test credentials without saving
+# =============================================================================
+
+@router.post(
+    "/test-inline",
+    response_model=ConnectionTestResponse,
+    summary="Test connection credentials inline (without saving)",
+    description="Validates host, port, and credentials without creating a connection. Admin only.",
+)
+async def test_connection_inline(
+    request: Request,
+    body: ConnectionCreateRequest,
+    admin: CurrentUser = Depends(require_admin),
+) -> ConnectionTestResponse:
+    """
+    Test raw connection credentials before saving.
+    Used by the 'Test Connection' button on the create form.
+    """
+    # SSRF guard
+    try:
+        pinned = validate_connection_host(body.host, body.port)
+    except GuardSSRFError as exc:
+        return ConnectionTestResponse(
+            success=False,
+            error=f"Host not allowed: {exc}",
+        )
+
+    # Real DB credential validation
+    start = time.monotonic()
+    cred_ok, cred_err = await _validate_db_credentials(
+        db_type=body.db_type.value,
+        host=body.host,
+        port=body.port,
+        database_name=body.database_name,
+        username=body.username,
+        password=body.password,
+        ssl_mode=body.ssl_mode.value,
+    )
+    latency_ms = int((time.monotonic() - start) * 1000)
+
+    return ConnectionTestResponse(
+        success=cred_ok,
+        latency_ms=latency_ms if cred_ok else None,
+        error=cred_err,
+        resolved_ip=pinned.resolved_ip,
+    )
 
 
 # =============================================================================
@@ -531,21 +690,16 @@ async def test_connection(
     request: Request,
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
+    key_manager=Depends(get_key_manager),
 ) -> ConnectionTestResponse:
     """
-    TCP-level connectivity probe.
+    Full connectivity + authentication probe.
 
     Steps:
         1. Fetch connection from DB
         2. Re-validate SSRF guard on stored host:port (T1, T51)
-           — host could have been valid at creation but DNS updated since
-        3. TCP connect to pinned.resolved_ip:port (never to hostname — T51)
-        4. Return result with latency and resolved IP
-
-    We do NOT perform full database authentication here:
-      - Avoids needing per-DB driver packages in the API container
-      - TCP reachability is the most common failure mode
-      - Schema introspection (Component 11) performs real DB auth
+        3. Decrypt credentials and attempt real DB login
+        4. Return result with latency
     """
     conn = await _get_conn_or_404(connection_id, db)
 
@@ -572,24 +726,45 @@ async def test_connection(
             resolved_ip=None,
         )
 
-    # TCP probe using pinned resolved IP (T51 — no second DNS resolution)
-    success, latency_ms, error = await _tcp_probe(
-        ip=pinned.resolved_ip,
+    # Decrypt credentials and do real DB authentication
+    start = time.monotonic()
+    try:
+        creds = _decrypt_credentials(key_manager, conn.encrypted_credentials)
+    except Exception:
+        return ConnectionTestResponse(
+            success=False,
+            error="Could not decrypt stored credentials. Re-save the connection.",
+        )
+
+    cred_ok, cred_err = await _validate_db_credentials(
+        db_type=conn.db_type or "postgresql",
+        host=conn.host,
         port=conn.port,
+        database_name=conn.database_name or "",
+        username=creds.get("username", ""),
+        password=creds.get("password", ""),
+        ssl_mode=conn.ssl_mode or "disable",
     )
+    latency_ms = int((time.monotonic() - start) * 1000)
+
+    if not cred_ok:
+        # Fall back to TCP probe to distinguish network vs auth errors
+        tcp_ok, _, _ = await _tcp_probe(pinned.resolved_ip, conn.port)
+        if not tcp_ok:
+            cred_err = "Cannot reach database server — check host and port."
 
     log.info(
         "connections.tested",
         admin_id=admin["user_id"],
         connection_id=str(connection_id),
         resolved_ip=pinned.resolved_ip,
-        success=success,
+        success=cred_ok,
         latency_ms=latency_ms,
     )
 
     return ConnectionTestResponse(
-        success=success,
+        success=cred_ok,
         latency_ms=latency_ms,
-        error=error,
+        error=cred_err,
         resolved_ip=pinned.resolved_ip,
     )

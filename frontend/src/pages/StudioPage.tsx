@@ -56,9 +56,13 @@ function EmptyCanvas({ onAdd, onAiGenerate }: { onAdd: () => void; onAiGenerate:
           <Palette className="h-12 w-12 text-blue-400/50" />
         </div>
         <h2 className="text-xl font-bold text-white mb-2">Dashboard Canvas</h2>
-        <p className="text-sm text-slate-400 mb-8 leading-relaxed">
+        <p className="text-sm text-slate-400 mb-3 leading-relaxed">
           Build interactive dashboards by dragging database columns into visuals,
           or let AI create one for you.
+        </p>
+        <p className="text-xs text-slate-500 mb-8">
+          Make sure you have a <span className="text-blue-400">database connection</span> and{" "}
+          <span className="text-violet-400">AI provider</span> configured in Settings first.
         </p>
         <div className="flex items-center justify-center gap-3">
           <Button icon={<Plus className="h-4 w-4" />} onClick={onAdd}>

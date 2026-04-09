@@ -66,6 +66,9 @@ COPY backend/scripts /app/scripts
 COPY backend/alembic /app/alembic
 COPY backend/alembic.ini /app/alembic.ini
 
+# Fix Windows CRLF line endings + make executable
+RUN sed -i 's/\r$//' /app/scripts/entrypoint.sh && chmod +x /app/scripts/entrypoint.sh
+
 # Ensure proper ownership
 RUN chown -R sbi:sbi /app
 
@@ -75,9 +78,5 @@ EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=15s \
     CMD curl -sf http://localhost:8000/health || exit 1
-
-# CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${APP_WORKERS:-4} --log-level ${LOG_LEVEL:-info}"]
-# Make entrypoint executable (add this BEFORE the USER sbi line)
-RUN chmod +x /app/scripts/entrypoint.sh
 
 CMD ["/app/scripts/entrypoint.sh"]

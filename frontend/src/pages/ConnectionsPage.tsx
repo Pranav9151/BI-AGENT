@@ -141,7 +141,7 @@ export default function ConnectionsPage() {
     queryFn: () => api.get<ConnectionListResponse>("/connections/"),
   });
 
-  // Deactivate mutation
+  // Deactivate mutation (soft)
   const deactivate = useMutation({
     mutationFn: (id: string) => api.delete(`/connections/${id}`),
     onSuccess: () => {
@@ -151,6 +151,20 @@ export default function ConnectionsPage() {
     },
     onError: (err: ApiRequestError) => {
       toast.error(err.message || "Failed to deactivate");
+      setDeactivatingId(null);
+    },
+  });
+
+  // Hard delete mutation (permanent)
+  const hardDelete = useMutation({
+    mutationFn: (id: string) => api.delete(`/connections/${id}?permanent=true`),
+    onSuccess: () => {
+      toast.success("Connection permanently deleted");
+      queryClient.invalidateQueries({ queryKey: ["connections"] });
+      setDeactivatingId(null);
+    },
+    onError: (err: ApiRequestError) => {
+      toast.error(err.message || "Failed to delete");
       setDeactivatingId(null);
     },
   });
@@ -309,13 +323,18 @@ export default function ConnectionsPage() {
                         {deactivatingId === conn.connection_id ? (
                           <div className="flex items-center gap-1">
                             <button
-                              onClick={() =>
-                                deactivate.mutate(conn.connection_id)
-                              }
-                              className="text-[11px] px-2 py-1 rounded bg-red-600/80 text-white hover:bg-red-500 transition-colors"
-                              disabled={deactivate.isPending}
+                              onClick={() => deactivate.mutate(conn.connection_id)}
+                              className="text-[11px] px-2 py-1 rounded bg-amber-600/80 text-white hover:bg-amber-500 transition-colors"
+                              disabled={deactivate.isPending || hardDelete.isPending}
                             >
-                              {deactivate.isPending ? "…" : "Confirm"}
+                              Deactivate
+                            </button>
+                            <button
+                              onClick={() => hardDelete.mutate(conn.connection_id)}
+                              className="text-[11px] px-2 py-1 rounded bg-red-600/80 text-white hover:bg-red-500 transition-colors"
+                              disabled={deactivate.isPending || hardDelete.isPending}
+                            >
+                              Delete
                             </button>
                             <button
                               onClick={() => setDeactivatingId(null)}

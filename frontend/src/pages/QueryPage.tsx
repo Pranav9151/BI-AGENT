@@ -202,7 +202,21 @@ export default function QueryPage() {
       setQuestion("");
       setActiveTab("table");
     },
-    onError: (err: ApiRequestError) => toast.error(err.message || "Query failed"),
+    onError: (err: ApiRequestError) => {
+      const msg = err.message || "Query failed";
+      const lower = msg.toLowerCase();
+      if (lower.includes("connect") || lower.includes("authentication") || lower.includes("password")) {
+        toast.error(msg, { description: "Check your database connection credentials in Settings → Connections.", duration: 8000 });
+      } else if (lower.includes("circuit breaker") || lower.includes("cooling down")) {
+        toast.error("AI provider temporarily unavailable", { description: "Automatic retry in 60 seconds. Try again shortly.", duration: 8000 });
+      } else if (lower.includes("all ai providers failed") || lower.includes("no active ai provider")) {
+        toast.error(msg, { description: "Go to Settings → LLM Providers and add/configure a provider with a valid API key.", duration: 10000 });
+      } else if (lower.includes("provider") || lower.includes("llm") || lower.includes("groq") || lower.includes("api key")) {
+        toast.error(msg, { description: "Check your AI provider settings in Settings → LLM Providers.", duration: 8000 });
+      } else {
+        toast.error(msg);
+      }
+    },
   });
 
   const handleSubmit = useCallback((q?: string) => {
